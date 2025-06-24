@@ -67,15 +67,6 @@ else
     cd $DEPLOY_DIR
 fi
 
-# 设置环境变量文件
-echo -e "${BLUE}设置环境变量...${NC}"
-if [ ! -f "$DEPLOY_DIR/backend/.env" ]; then
-    echo -e "${RED}未找到.env文件，请创建...${NC}"
-    echo "GOOGLE_API_KEY=your_api_key_here" > $DEPLOY_DIR/backend/.env
-    echo -e "${RED}请编辑 $DEPLOY_DIR/backend/.env 文件，填入您的Google API密钥${NC}"
-    read -p "按回车键继续..." </dev/tty
-fi
-
 # 设置后端
 echo -e "${BLUE}设置后端环境...${NC}"
 cd $DEPLOY_DIR/backend
