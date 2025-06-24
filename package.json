@@ -2,7 +2,7 @@
   "name": "video-ai-monorepo",
   "private": true,
   "scripts": {
-    "dev": "concurrently \"npm run dev --prefix frontend\" \"cd backend && ./venv/bin/python -m uvicorn main:app --reload\"",
+    "dev": "concurrently \"npm run dev --prefix frontend\" \"cd backend && ./venv/bin/python -m uvicorn main:app --port 8002 --reload\"",
     "postinstall": "npm install --prefix frontend"
   },
   "devDependencies": {
