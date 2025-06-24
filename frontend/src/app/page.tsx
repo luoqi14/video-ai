@@ -190,7 +190,7 @@ export default function VideoAiPage() {
   }
 
   const getAiAssistance = async (currentPrompt: string, currentVideoFile: File | null, lastVideoFile: File | null): Promise<{ response: AiResponse; videoWasSent: boolean; }> => {
-    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8002';
     const formData = new FormData();
     formData.append('prompt', currentPrompt);
 
