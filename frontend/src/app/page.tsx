@@ -357,7 +357,7 @@ export default function VideoAiPage() {
       setUploadMessage('');
     };
     
-    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8002';
     const eventSource = new EventSource(`${backendUrl}/api/upload-progress`);
     
     // 设置初始上传状态
