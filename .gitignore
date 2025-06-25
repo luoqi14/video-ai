@@ -6,7 +6,6 @@ frontend/.next
 backend/venv
 backend/__pycache__
 backend/.pytest_cache
-backend/.env
 
 # IDE / OS files
 .DS_Store
