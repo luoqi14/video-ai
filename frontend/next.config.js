@@ -25,15 +25,15 @@ const nextConfig = {
           },
         ],
       },
-      {
-        source: '/ffmpeg-core.:ext(js|wasm)',
-        headers: [
-          {
-            key: 'Access-Control-Allow-Origin',
-            value: '*', 
-          },
-        ],
-      },
+      // {
+      //   source: '/ffmpeg-core.:ext(js|wasm)',
+      //   headers: [
+      //     {
+      //       key: 'Access-Control-Allow-Origin',
+      //       value: '*', 
+      //     },
+      //   ],
+      // },
     ];
   },
   webpack: (config) => {

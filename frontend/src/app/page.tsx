@@ -102,16 +102,16 @@ export default function VideoAiPage() {
       ffmpegRef.current = ffmpegInstance;
       setFfmpeg(ffmpegInstance); // Assuming you still need this state
 
-      // Using version 0.12.6 for core, wasm, and worker
-      const baseURL = 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/umd';
-      // For multithreading, we also need the worker script
-      const workerURLBlob = await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript');
+      // 从本地public目录加载FFmpeg文件
+      // 不需要使用toBlobURL，因为文件已经在本地服务器上
+      const baseURL = '';
+      // 注意：我们不再需要转换为Blob URL，因为文件已经在我们的服务器上
 
       try {
         await ffmpegInstance.load({
-          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-          workerURL: workerURLBlob, // Add the worker URL for multithreading
+          coreURL: '/ffmpeg-core.js',
+          wasmURL: '/ffmpeg-core.wasm',
+          workerURL: '/ffmpeg-core.worker.js', // 直接使用本地文件路径
           // You can also pass arguments to enable threading,
           // though often just providing the worker is enough for it to attempt to use threads.
           // For explicit control, some versions might use:

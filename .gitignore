@@ -1,7 +1,6 @@
 # Frontend dependencies
 frontend/node_modules
 frontend/.next
-frontend/public
 
 # Backend dependencies
 backend/venv
@@ -12,3 +11,4 @@ backend/.env
 # IDE / OS files
 .DS_Store
 .vscode/
+node_modules
