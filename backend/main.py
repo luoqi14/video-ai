@@ -12,31 +12,9 @@ from dotenv import load_dotenv
 from google.genai import types
 import asyncio
 import json
-import functools
-import traceback
 
 # Load environment variables from .env file
 load_dotenv()
-
-# --- 异步错误处理装饰器 ---
-def async_error_handler(func):
-    """装饰器：捕获异步函数中的所有错误并提供详细的错误信息"""
-    @functools.wraps(func)
-    async def wrapper(*args, **kwargs):
-        try:
-            return await func(*args, **kwargs)
-        except HTTPException:
-            # 重新抛出 HTTPException，保持原有的状态码和消息
-            raise
-        except asyncio.TimeoutError as e:
-            print(f"❌ Timeout in {func.__name__}: {e}")
-            print(f"🔍 Full traceback:\n{traceback.format_exc()}")
-            raise HTTPException(status_code=408, detail=f"操作超时: {func.__name__}")
-        except Exception as e:
-            print(f"❌ Unexpected error in {func.__name__}: {e}")
-            print(f"🔍 Full traceback:\n{traceback.format_exc()}")
-            raise HTTPException(status_code=500, detail=f"服务器内部错误: {str(e)}")
-    return wrapper
 
 # --- Global State for Current Video (Simple In-Memory) ---
 class CurrentVideoState:
@@ -151,6 +129,9 @@ MODEL_NAME = "gemini-2.5-flash" # Using a stable model name
 if not API_KEY:
     raise RuntimeError("GOOGLE_API_KEY not found in .env file")
 
+# Initialize the new client, this is the recommended approach for the new SDK
+client = genai.Client(api_key=API_KEY)
+
 app = FastAPI()
 
 # --- CORS Middleware ---
@@ -212,202 +193,111 @@ execute_ffmpeg_with_optional_subtitles_declaration = types.FunctionDeclaration(
 )
 
 @app.post("/api/generate-command-with-video")
-@async_error_handler
 async def generate_command_with_video(prompt: str = Form(...), video_file: Optional[UploadFile] = File(None)):
-    # =========================================================================
-    # === 新增的详细调试代码 ===
-    # =========================================================================
-    print("\n\n--- [START] NEW REQUEST RECEIVED ---")
-    print(f"--- CHECKPOINT A: ENTERING generate_command_with_video function ---")
     print(f"Received prompt for video processing: {prompt}, and video: {video_file.filename if video_file else 'No new video file provided (will attempt to use previous)'}")
-
-    # Initialize the new client, this is the recommended approach for the new SDK
-    client = genai.Client(api_key=API_KEY)
     
     # Reset upload progress at the start
     upload_progress.reset()
     
     file_object_for_gemini: Optional[types.File] = None
     original_video_filename_for_prompt: str = "input.mp4" # Default
-    temp_file_path = None # Initialize for finally block
+    temp_file_path = None # Initialize for cleanup
 
     if video_file and video_file.filename: # New video file is provided
-        print(f"--- CHECKPOINT B: New video file found: {video_file.filename}. Preparing to read. ---")
+        print(f"Processing new video file: {video_file.filename}")
         upload_progress.update(5, "uploading", f"准备上传文件: {video_file.filename}")
         await asyncio.sleep(0.001)
         
         video_content = await video_file.read()
-        print(f"--- CHECKPOINT C: Video file read into memory. Size: {len(video_content)} bytes. ---")
         video_mime_type = video_file.content_type
         upload_progress.update(15, "uploading", "文件读取完成，准备上传到 Gemini")
         await asyncio.sleep(0.001)
         
-        try:
-            file_suffix = os.path.splitext(video_file.filename)[1]
-            with tempfile.NamedTemporaryFile(delete=False, suffix=file_suffix) as tmp:
-                tmp.write(video_content)
-                temp_file_path = tmp.name
-            
-            print(f"--- CHECKPOINT D: File written to temporary path: {temp_file_path}. PREPARING TO UPLOAD TO GOOGLE. ---")
-            upload_progress.update(25, "uploading", f"开始上传到 Gemini (文件大小: {len(video_content)} bytes)")
-            print(f"Uploading temporary video file to Google: {video_file.filename}, mime_type: {video_mime_type}")
-            await asyncio.sleep(0.001)
+        # Create temp file
+        file_suffix = os.path.splitext(video_file.filename)[1]
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_suffix) as tmp:
+            tmp.write(video_content)
+            temp_file_path = tmp.name
+        
+        print(f"Video content (size: {len(video_content)}) saved to temp file: {temp_file_path}")
+        upload_progress.update(25, "uploading", f"开始上传到 Gemini (文件大小: {len(video_content)} bytes)")
+        print(f"Uploading temporary video file to Google: {video_file.filename}, mime_type: {video_mime_type}")
+        await asyncio.sleep(0.001)
 
-            upload_config = types.UploadFileConfig(
-                mime_type=video_mime_type,
-                display_name=video_file.filename
-            )
-            upload_start_time = time.time()
-            # 核心修改：将阻塞的上传操作放入后台线程，添加超时和详细错误处理
-            try:
-                print("--- CHECKPOINT E: EXECUTING 'client.files.upload' in background thread... ---")
-                uploaded_file_obj = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        client.files.upload,
-                        file=temp_file_path,
-                        config=upload_config
-                    ),
-                    timeout=300  # 5分钟超时
-                )
-                upload_duration = time.time() - upload_start_time
-                print(f"--- CHECKPOINT F: 'client.files.upload' FINISHED successfully in {upload_duration:.2f} seconds. ---")
-                print(f"✅ File upload successful in {upload_duration:.2f}s: {uploaded_file_obj.name}")
-            except asyncio.TimeoutError:
-                print(f"--- [FATAL ERROR] CRASHED DURING 'client.files.upload' - TIMEOUT ---")
-                upload_progress.update(100, "error", "文件上传超时（5分钟）")
-                raise HTTPException(status_code=408, detail="文件上传超时，请检查文件大小和网络连接")
-            except Exception as upload_error:
-                print(f"--- [FATAL ERROR] CRASHED DURING 'client.files.upload' ---")
-                print(f"--- The error is: {upload_error} ---")
-                print(f"--- Traceback: ---")
-                traceback.print_exc() # 打印完整的错误堆栈
-                upload_progress.update(100, "error", f"文件上传失败: {str(upload_error)}")
-                print(f"❌ File upload failed: {upload_error}")
-                raise HTTPException(status_code=500, detail=f"Crashed during Google File API upload: {upload_error}")
-            
-            upload_duration = time.time() - upload_start_time
-            print(f"PERF: client.files.upload took {upload_duration:.2f} seconds.")
-            upload_progress.update(60, "processing", f"文件上传完成，等待 Gemini 处理")
-            print(f"Initial file upload response. Name: {uploaded_file_obj.name}, Display Name: {uploaded_file_obj.display_name}, URI: {uploaded_file_obj.uri}, State: {uploaded_file_obj.state.name if uploaded_file_obj.state else 'UNKNOWN'}")
+        upload_config = types.UploadFileConfig(
+            mime_type=video_mime_type,
+            display_name=video_file.filename
+        )
+        upload_start_time = time.time()
+        
+        uploaded_file_obj = client.files.upload(
+            file=temp_file_path,
+            config=upload_config
+        )
+        
+        upload_duration = time.time() - upload_start_time
+        print(f"PERF: client.files.upload took {upload_duration:.2f} seconds.")
+        upload_progress.update(60, "processing", f"文件上传完成，等待 Gemini 处理")
+        print(f"Initial file upload response. Name: {uploaded_file_obj.name}, Display Name: {uploaded_file_obj.display_name}, URI: {uploaded_file_obj.uri}, State: {uploaded_file_obj.state.name if uploaded_file_obj.state else 'UNKNOWN'}")
+        await asyncio.sleep(0.001)
+        
+        # Wait for file to be processed
+        wait_progress = 60
+        processing_wait_start_time = time.time()
+        while uploaded_file_obj.state and uploaded_file_obj.state.name == "PROCESSING":
+            wait_progress = min(90, wait_progress + 5)  # Gradually increase progress to 90%
+            upload_progress.update(wait_progress, "processing", f"Gemini 正在处理文件 {uploaded_file_obj.name}")
             await asyncio.sleep(0.001)
+            print(f"File {uploaded_file_obj.name} is still PROCESSING. Waiting 1 seconds...")
+            await asyncio.sleep(1)
             
-            # Wait for file to be processed
-            print("--- CHECKPOINT G: Starting to wait for file processing by Gemini... ---")
-            wait_progress = 60
-            processing_wait_start_time = time.time()
-            max_processing_time = 180  # 3分钟处理超时
-            
-            while uploaded_file_obj.state and uploaded_file_obj.state.name == "PROCESSING":
-                # 检查处理超时
-                if time.time() - processing_wait_start_time > max_processing_time:
-                    upload_progress.update(100, "error", "文件处理超时（3分钟）")
-                    raise HTTPException(status_code=408, detail="Gemini文件处理超时，请稍后重试")
-                
-                wait_progress = min(90, wait_progress + 5)  # Gradually increase progress to 90%
-                upload_progress.update(wait_progress, "processing", f"Gemini 正在处理文件 {uploaded_file_obj.name}")
-                await asyncio.sleep(0.001)
-                print(f"File {uploaded_file_obj.name} is still PROCESSING. Waiting 1 seconds...")
-                await asyncio.sleep(1)
-                try:
-                    # 核心修改：将阻塞的获取状态操作放入后台线程，添加超时
-                    retrieved_file = await asyncio.wait_for(
-                        asyncio.to_thread(client.files.get, name=uploaded_file_obj.name),
-                        timeout=30  # 30秒超时
-                    )
-                    if retrieved_file and retrieved_file.state:
-                        uploaded_file_obj = retrieved_file
-                        print(f"✅ Updated file state: {uploaded_file_obj.name} is now {uploaded_file_obj.state.name}")
-                    else:
-                        print(f"⚠️ Warning: client.files.get for {uploaded_file_obj.name} returned invalid data or state. Retrying...")
-                except asyncio.TimeoutError:
-                    print(f"⚠️ Timeout getting file status for {uploaded_file_obj.name}, retrying...")
-                    upload_progress.update(wait_progress, "processing", f"获取文件状态超时，重试中...")
-                except Exception as e_get_file:
-                    print(f"❌ Error calling client.files.get(name='{uploaded_file_obj.name}'): {e_get_file}. Will retry.")
-                    upload_progress.update(wait_progress, "processing", f"获取文件状态出错，重试中: {str(e_get_file)}")
-            
-            processing_wait_duration = time.time() - processing_wait_start_time
-            print(f"PERF: File state change from PROCESSING to ACTIVE took {processing_wait_duration:.2f} seconds.")
-            if not (uploaded_file_obj.state and uploaded_file_obj.state.name == "ACTIVE"):
-                print(f"--- [FATAL ERROR] File did not become ACTIVE. Current state: {uploaded_file_obj.state.name if uploaded_file_obj.state else 'UNKNOWN'} ---")
-                upload_progress.update(100, "error", f"文件未能变为 ACTIVE 状态")
-                raise HTTPException(status_code=500, detail=f"Uploaded file {uploaded_file_obj.name} did not become ACTIVE.")
-            
-            print(f"--- CHECKPOINT H: File processing completed successfully. File {uploaded_file_obj.name} is ACTIVE. ---")
-            upload_progress.update(100, "completed", f"文件上传并处理完成: {uploaded_file_obj.name}")
-            print(f"File {uploaded_file_obj.name} is ACTIVE.")
-            current_video_state.google_file_name = uploaded_file_obj.name
-            current_video_state.original_file_name = video_file.filename
-            current_video_state.mime_type = video_mime_type
-            file_object_for_gemini = uploaded_file_obj
-            original_video_filename_for_prompt = video_file.filename
+            retrieved_file = client.files.get(name=uploaded_file_obj.name)
+            if retrieved_file and retrieved_file.state:
+                uploaded_file_obj = retrieved_file
+                print(f"Updated file state: {uploaded_file_obj.name} is now {uploaded_file_obj.state.name}")
+            else:
+                print(f"Warning: client.files.get for {uploaded_file_obj.name} returned invalid data or state. Retrying...")
+        
+        processing_wait_duration = time.time() - processing_wait_start_time
+        print(f"PERF: File state change from PROCESSING to ACTIVE took {processing_wait_duration:.2f} seconds.")
+        
+        if not (uploaded_file_obj.state and uploaded_file_obj.state.name == "ACTIVE"):
+            upload_progress.update(100, "error", f"文件未能变为 ACTIVE 状态")
+            raise HTTPException(status_code=500, detail=f"Uploaded file {uploaded_file_obj.name} did not become ACTIVE.")
+        
+        upload_progress.update(100, "completed", f"文件上传并处理完成: {uploaded_file_obj.name}")
+        print(f"File {uploaded_file_obj.name} is ACTIVE.")
+        current_video_state.google_file_name = uploaded_file_obj.name
+        current_video_state.original_file_name = video_file.filename
+        current_video_state.mime_type = video_mime_type
+        file_object_for_gemini = uploaded_file_obj
+        original_video_filename_for_prompt = video_file.filename
 
-        except Exception as e:
-            print(f"--- [FATAL ERROR] An unexpected error occurred in the main video processing try block. ---")
-            print(f"--- The error is: {e} ---")
-            traceback.print_exc()
-            upload_progress.update(100, "error", f"Error during new video processing (upload stage): {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Failed to process new video (upload stage): {str(e)}")
-        finally:
-            if temp_file_path and os.path.exists(temp_file_path):
-                try:
-                    os.remove(temp_file_path)
-                    print(f"--- [CLEANUP] Temporary file {temp_file_path} deleted. ---")
-                except OSError as e_remove:
-                    print(f"--- [CLEANUP ERROR] Error deleting temporary file {temp_file_path}: {e_remove}")
+        # Clean up temp file
+        if temp_file_path and os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
+            print(f"Temporary file {temp_file_path} deleted.")
+                    
     elif current_video_state.google_file_name:
-        print(f"--- CHECKPOINT I: No new video file. Using last uploaded: {current_video_state.google_file_name} (Original: {current_video_state.original_file_name}) ---")
+        print(f"No new video file. Using last uploaded: {current_video_state.google_file_name} (Original: {current_video_state.original_file_name})")
         original_video_filename_for_prompt = current_video_state.original_file_name or "input.mp4"
-        try:
-            # 核心修改：将阻塞的获取状态操作放入后台线程，添加超时处理
-            try:
-                retrieved_file = await asyncio.wait_for(
-                    asyncio.to_thread(client.files.get, name=current_video_state.google_file_name),
-                    timeout=30
-                )
-            except asyncio.TimeoutError:
-                upload_progress.update(100, "error", "获取已缓存文件状态超时")
-                raise HTTPException(status_code=408, detail="获取已缓存文件状态超时，请重新上传文件")
-            except Exception as get_error:
-                upload_progress.update(100, "error", f"获取已缓存文件失败: {str(get_error)}")
-                raise HTTPException(status_code=500, detail=f"获取已缓存文件失败: {str(get_error)}")
-            
-            while retrieved_file.state and retrieved_file.state.name == "PROCESSING":
-                print(f"File {retrieved_file.name} is PROCESSING. Waiting 1 seconds...")
-                await asyncio.sleep(1)  # 使用异步sleep
-                try:
-                    retrieved_file = await asyncio.wait_for(
-                        asyncio.to_thread(client.files.get, name=current_video_state.google_file_name),
-                        timeout=30
-                    ) # Re-fetch
-                except asyncio.TimeoutError:
-                    print(f"⚠️ Timeout getting cached file status, retrying...")
-                    continue
-                except Exception as e_refetch:
-                    print(f"❌ Error re-fetching cached file: {e_refetch}")
-                    break
-            
-            if not (retrieved_file.state and retrieved_file.state.name == "ACTIVE"):
-                raise HTTPException(status_code=500, detail=f"Previously uploaded file {current_video_state.google_file_name} not ACTIVE. State: {retrieved_file.state.name if retrieved_file.state else 'UNKNOWN'}. Please re-upload.")
-            
-            print(f"Successfully retrieved and confirmed ACTIVE status for {current_video_state.google_file_name}")
-            upload_progress.update(100, "completed", f"使用缓存文件 {current_video_state.google_file_name}")
-            file_object_for_gemini = retrieved_file
-        except Exception as e_get:
-            print(f"Error retrieving or confirming status for {current_video_state.google_file_name}: {e_get}")
-            # Clear state if file is problematic
-            current_video_state.google_file_name = None
-            current_video_state.original_file_name = None
-            current_video_state.mime_type = None
-            raise HTTPException(status_code=500, detail=f"Failed to retrieve previous video. Please re-upload. Error: {str(e_get)}")
+        
+        retrieved_file = client.files.get(name=current_video_state.google_file_name)
+        while retrieved_file.state and retrieved_file.state.name == "PROCESSING":
+            print(f"File {retrieved_file.name} is PROCESSING. Waiting 1 seconds...")
+            time.sleep(1)
+            retrieved_file = client.files.get(name=current_video_state.google_file_name) # Re-fetch
+        
+        if not (retrieved_file.state and retrieved_file.state.name == "ACTIVE"):
+            raise HTTPException(status_code=500, detail=f"Previously uploaded file {current_video_state.google_file_name} not ACTIVE. State: {retrieved_file.state.name if retrieved_file.state else 'UNKNOWN'}. Please re-upload.")
+        
+        print(f"Successfully retrieved and confirmed ACTIVE status for {current_video_state.google_file_name}")
+        upload_progress.update(100, "completed", f"使用缓存文件 {current_video_state.google_file_name}")
+        file_object_for_gemini = retrieved_file
     else:
-        # This case should ideally be caught by frontend logic if it ensures a video is always selected for the first prompt.
-        # However, if backend is called directly or state is lost, this is a fallback.
-        print("--- [ERROR] No video file provided and no previous video found. Raising HTTPException. ---")
         raise HTTPException(status_code=400, detail="No video file provided and no previous video found to process.")
 
     # --- At this point, file_object_for_gemini and original_video_filename_for_prompt are set ---
-    print(f"--- CHECKPOINT J: File processing completed. Ready to construct Gemini prompt. ---")
 
     # --- Construct the prompt for Gemini ---
     tool_config_video = types.Tool(function_declarations=[execute_ffmpeg_with_optional_subtitles_declaration])
@@ -417,21 +307,24 @@ async def generate_command_with_video(prompt: str = Form(...), video_file: Optio
     prompt_for_gemini = (
         f"You are a helpful AI assistant. The user has provided a video file named '{fixed_ffmpeg_input_filename}'.\n"
         f"The user's instruction is: '{user_natural_language_prompt}'.\n\n"
-        f"Based on this, you have two choices:\n"
-        f"1. **Direct Text Answer**: If the instruction is a question about the video's content (e.g., 'summarize this video', 'what is in this video?', 'how many people are in this scene?'), provide a direct, concise answer. Do not invoke any tools for this.\n"
-        f"2. **Video Processing Tool Call**: If the instruction requires transforming or editing the video (e.g., 'convert to GIF', 'trim the video', 'extract audio', 'add subtitles'), you MUST call the 'execute_ffmpeg_with_optional_subtitles' tool. Do not attempt to answer directly if a tool call is appropriate.\n\n"
-        f"**Tool Usage Details for 'execute_ffmpeg_with_optional_subtitles'**:\n"
+        f"IMPORTANT: Analyze the user's request carefully and choose the appropriate response type:\n\n"
+        f"**TYPE 1 - Content Analysis (NO TOOLS)**: If the user wants to understand, analyze, or get information about the video content:\n"
+        f"- Examples: 'summarize this video', 'what is in this video?', 'describe the content', 'what happens in the video?', 'analyze this video', 'tell me about this video'\n"
+        f"- Action: Provide a direct text response by analyzing the video. DO NOT use any tools.\n\n"
+        f"**TYPE 2 - Video Processing (USE TOOL)**: If the user wants to transform, edit, or modify the video file:\n"
+        f"- Examples: 'convert to GIF', 'trim the video', 'extract audio', 'add subtitles', 'change format', 'resize video'\n"
+        f"- Action: Call the 'execute_ffmpeg_with_optional_subtitles' tool.\n\n"
+        f"**Current Request Analysis**: The instruction '{user_natural_language_prompt}' is asking for:\n"
+        f"- If it's about understanding/analyzing content → Provide direct text answer in Chinese\n"
+        f"- If it's about editing/converting video → Use the tool\n\n"
+        f"**Tool Usage Details** (only if TYPE 2):\n"
         f"- The user's video is available as '{fixed_ffmpeg_input_filename}'. This MUST be the input file in your FFmpeg command.\n"
         f"- Generate the `command_array` (the arguments for FFmpeg, without 'ffmpeg' itself), the `output_filename`, and subtitle information if needed.\n"
         f"- **Subtitles**: If the instruction is about generating or burning in subtitles, create the content for 'subtitles_content' and a 'subtitles_filename'. When burning subtitles, your `command_array` MUST include the filter `subtitles=<subtitles_filename>:fontsdir=/customfonts:force_style='Fontname=Source Han Sans SC'`. The font 'SourceHanSansSC-Regular.otf' is available in '/customfonts'. If no subtitles are needed, provide empty strings for 'subtitles_content' and 'subtitles_filename'.\n\n"
-        f"**Decision Time**: Now, based on the instruction '{prompt}', decide whether to provide a direct text answer or to call the video processing tool. Please ensure all direct text answers are in Chinese."
+        f"Now respond appropriately based on the request type."
     )
 
-    # file_object_for_gemini is the File object from client.files.get() or client.files.upload()
-    # It has attributes like .name (resource name like 'files/xxx'), .uri, .mime_type
-
     # Explicitly create a Part for the video file, referencing it by URI and MIME type
-    # This avoids passing along potentially problematic metadata from the full File object.
     video_file_part = types.Part(
         file_data={
             'file_uri': file_object_for_gemini.uri,
@@ -445,117 +338,85 @@ async def generate_command_with_video(prompt: str = Form(...), video_file: Optio
     ]
 
     # --- Call Gemini API and Process Response ---
-    try:
-        print(f"--- CHECKPOINT K: Sending to Gemini with multimodal prompt (using file: {file_object_for_gemini.name if file_object_for_gemini else 'N/A'}) and tool: {execute_ffmpeg_with_optional_subtitles_declaration.name} ---")
-        
-        generate_content_start_time = time.time()
-        # 核心修改：将Gemini API调用放入后台线程，添加超时和错误处理
-        try:
-            response = await asyncio.wait_for(
-                asyncio.to_thread(
-                    client.models.generate_content,
-                    model=f'models/{MODEL_NAME}',
-                    contents=[types.Content(parts=request_contents)], # Ensure parts are wrapped in types.Content
-                    config=types.GenerateContentConfig(
-                        tools=[types.Tool(function_declarations=[execute_ffmpeg_with_optional_subtitles_declaration])],
-                        tool_config=tool_config_video,
-                        temperature=0.3
-                    )
-                ),
-                timeout=120  # 2分钟超时
-            )
-            generate_content_duration = time.time() - generate_content_start_time
-            print(f"--- CHECKPOINT L: Gemini API call completed successfully in {generate_content_duration:.2f}s ---")
-            print(f"✅ Gemini API call successful in {generate_content_duration:.2f}s")
-        except asyncio.TimeoutError:
-            print(f"--- [FATAL ERROR] CRASHED DURING Gemini API call - TIMEOUT ---")
-            print(f"❌ Gemini API call timeout after 2 minutes")
-            raise HTTPException(status_code=408, detail="Gemini API调用超时，请稍后重试")
-        except Exception as gemini_error:
-            print(f"--- [FATAL ERROR] CRASHED DURING Gemini API call ---")
-            print(f"--- The error is: {gemini_error} ---")
-            print(f"--- Traceback: ---")
-            traceback.print_exc() # 打印完整的错误堆栈
-            print(f"❌ Gemini API call failed: {gemini_error}")
-            raise HTTPException(status_code=500, detail=f"Crashed during Gemini API call: {str(gemini_error)}")
-        
-        generate_content_duration = time.time() - generate_content_start_time
-        print(f"PERF: client.models.generate_content took {generate_content_duration:.2f} seconds.")
-        print(f"Full Gemini response for video: {response}")
-        candidate = response.candidates[0]
+    print(f"Sending to Gemini with multimodal prompt (using file: {file_object_for_gemini.name if file_object_for_gemini else 'N/A'}) and tool: {execute_ffmpeg_with_optional_subtitles_declaration.name}")
+    
+    generate_content_start_time = time.time()
+    
+    response = client.models.generate_content(
+        model=f'models/{MODEL_NAME}',
+        contents=[types.Content(parts=request_contents)], # Ensure parts are wrapped in types.Content
+        config=types.GenerateContentConfig(
+            tools=[types.Tool(function_declarations=[execute_ffmpeg_with_optional_subtitles_declaration])],
+            tool_config=tool_config_video,
+            temperature=0.3
+        )
+    )
+    
+    generate_content_duration = time.time() - generate_content_start_time
+    print(f"PERF: client.models.generate_content took {generate_content_duration:.2f} seconds.")
+    print(f"Full Gemini response for video: {response}")
+    candidate = response.candidates[0]
 
-        if not candidate.content or not candidate.content.parts:
-            print(f"Gemini response (video) is missing content or parts. Full response: {response}")
-            if candidate.finish_reason != types.FinishReason.STOP:
-                 print(f"Gemini generation (video) stopped due to: {candidate.finish_reason.name}")
-                 if candidate.safety_ratings:
-                     for rating in candidate.safety_ratings:
-                         print(f"Safety Rating: {rating.category.name} - {rating.probability.name}")
-                 raise HTTPException(status_code=500, detail=f"Gemini generation (video) stopped: {candidate.finish_reason.name}")
-            raise HTTPException(status_code=500, detail="Gemini (video) returned empty content or parts.")
+    if not candidate.content or not candidate.content.parts:
+        print(f"Gemini response (video) is missing content or parts. Full response: {response}")
+        if candidate.finish_reason != types.FinishReason.STOP:
+             print(f"Gemini generation (video) stopped due to: {candidate.finish_reason.name}")
+             if candidate.safety_ratings:
+                 for rating in candidate.safety_ratings:
+                     print(f"Safety Rating: {rating.category.name} - {rating.probability.name}")
+             raise HTTPException(status_code=500, detail=f"Gemini generation (video) stopped: {candidate.finish_reason.name}")
+        raise HTTPException(status_code=500, detail="Gemini (video) returned empty content or parts.")
 
-        part = candidate.content.parts[0]
-        if part.function_call:
-            function_call = part.function_call
-            if function_call.name == execute_ffmpeg_with_optional_subtitles_declaration.name:
-                args = function_call.args
-                command_array = args.get("command_array")
-                output_filename = args.get("output_filename")
-                subtitles_content = args.get("subtitles_content", "") 
-                subtitles_filename = args.get("subtitles_filename", "")
-                
-                if not command_array or not isinstance(command_array, list) or not output_filename:
-                    print(f"Error: Gemini tool call (video) missing command_array (or it's not a list/is empty) or output_filename. Args: {args}")
-                    text_fb = "Gemini tool call (video) missing required arguments (command_array or output_filename), or command_array is not a list/is empty."
-                    if response.text: text_fb = response.text.strip()
-                    elif hasattr(part, 'text') and part.text: text_fb = part.text.strip()
-                    return {"error": text_fb, "text_response": text_fb}
+    part = candidate.content.parts[0]
+    if part.function_call:
+        function_call = part.function_call
+        if function_call.name == execute_ffmpeg_with_optional_subtitles_declaration.name:
+            args = function_call.args
+            command_array = args.get("command_array")
+            output_filename = args.get("output_filename")
+            subtitles_content = args.get("subtitles_content", "") 
+            subtitles_filename = args.get("subtitles_filename", "")
+            
+            if not command_array or not isinstance(command_array, list) or not output_filename:
+                print(f"Error: Gemini tool call (video) missing command_array (or it's not a list/is empty) or output_filename. Args: {args}")
+                text_fb = "Gemini tool call (video) missing required arguments (command_array or output_filename), or command_array is not a list/is empty."
+                if response.text: text_fb = response.text.strip()
+                elif hasattr(part, 'text') and part.text: text_fb = part.text.strip()
+                return {"error": text_fb, "text_response": text_fb}
 
-                print(f"--- CHECKPOINT M: Gemini wants to call tool '{function_call.name}' with command_array: {command_array}, output: '{output_filename}', subtitles_file: '{subtitles_filename}' ---")
-                print(f"--- [SUCCESS] Reached the end of the function successfully with tool call. ---")
-                return {
-                    "tool_call": {
-                        "name": function_call.name,
-                        "arguments": {
-                            "command_array": command_array,
-                            "output_filename": output_filename,
-                            "subtitles_content": subtitles_content,
-                            "subtitles_filename": subtitles_filename
-                        }
+            print(f"Gemini (video) wants to call tool '{function_call.name}' with command_array: {command_array}, output: '{output_filename}', subtitles_file: '{subtitles_filename}'")
+            return {
+                "tool_call": {
+                    "name": function_call.name,
+                    "arguments": {
+                        "command_array": command_array,
+                        "output_filename": output_filename,
+                        "subtitles_content": subtitles_content,
+                        "subtitles_filename": subtitles_filename
                     }
                 }
-            else:
-                print(f"Gemini (video) called an unexpected function: {function_call.name}")
-                text_resp_unexp = f"Gemini (video) called an unexpected function: {function_call.name}"
-                if response.text: text_resp_unexp = response.text.strip()
-                return {"text_response": text_resp_unexp, "error": f"Unexpected tool: {function_call.name}"}
-        
-        text_response_found = None
-        if candidate.content and candidate.content.parts:
-            for p_item in candidate.content.parts:
-                if hasattr(p_item, 'text') and p_item.text:
-                    text_response_found = p_item.text.strip()
-                    break
-        
-        if text_response_found:
-            print(f"--- CHECKPOINT M: Gemini returned text response: {text_response_found} ---")
-            print(f"--- [SUCCESS] Reached the end of the function successfully. ---")
-            return {"text_response": text_response_found}
+            }
         else:
-            print(f"--- [ERROR] Gemini response did not contain a valid function call or text. Parts: {candidate.content.parts} ---")
-            raise HTTPException(status_code=500, detail="Gemini (video) did not return a usable function call or text response.")
-
-    except HTTPException as http_exc:
-        # Re-raise HTTPExceptions that might have occurred during file processing or explicitly raised
-        raise http_exc
-    except Exception as e:
-        print(f"Error during Gemini API call or processing (video): {e}")
-        # Avoid trying to print 'response' if it's not defined (e.g., error before API call)
-        # It's better to rely on the specific exception 'e' for details.
-        raise HTTPException(status_code=500, detail=f"Error processing request with Gemini (video): {str(e)}")
+            print(f"Gemini (video) called an unexpected function: {function_call.name}")
+            text_resp_unexp = f"Gemini (video) called an unexpected function: {function_call.name}"
+            if response.text: text_resp_unexp = response.text.strip()
+            return {"text_response": text_resp_unexp, "error": f"Unexpected tool: {function_call.name}"}
+    
+    text_response_found = None
+    if candidate.content and candidate.content.parts:
+        for p_item in candidate.content.parts:
+            if hasattr(p_item, 'text') and p_item.text:
+                text_response_found = p_item.text.strip()
+                break
+    
+    if text_response_found:
+        print(f"Gemini (video) returned text response: {text_response_found}")
+        return {"text_response": text_response_found}
+    else:
+        print(f"Gemini response (video) did not contain a valid function call or text. Parts: {candidate.content.parts}")
+        raise HTTPException(status_code=500, detail="Gemini (video) did not return a usable function call or text response.")
 
 @app.get("/api/upload-progress")
-@async_error_handler
 async def upload_progress_stream():
     # 生成唯一的连接ID
     import uuid
@@ -642,36 +503,3 @@ async def upload_progress_stream():
 
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
-
-# ==========================================================
-# === 在你的 main.py 文件末尾添加这个全新的测试函数 ===
-# ==========================================================
-@app.post("/api/test-large-upload")
-async def test_large_upload(video_file: UploadFile = File(...)):
-    """
-    一个极其简单的测试接口，只为了验证接收大文件这个动作本身是否会导致进程崩溃。
-    """
-    print(f"\n--- [TEST ENDPOINT] STARTED: /api/test-large-upload ---")
-    print(f"--- [TEST ENDPOINT] Received file: {video_file.filename}, content-type: {video_file.content_type} ---")
-
-    # 我们不把整个文件读入内存，而是分块读取，这是更稳妥的方式
-    chunk_size = 1024 * 1024  # 1MB per chunk
-    total_size = 0
-    
-    try:
-        while True:
-            # 异步地读取一小块数据
-            chunk = await video_file.read(chunk_size)
-            if not chunk:
-                break # 文件读取完毕
-            total_size += len(chunk)
-            print(f"--- [TEST ENDPOINT] Read a chunk, total bytes so far: {total_size} ---")
-            # 我们甚至不把它写入磁盘，只是单纯地读取，把变量降到最低
-    
-    except Exception as e:
-        print(f"--- [TEST ENDPOINT] ERROR while reading chunks: {e} ---")
-        raise HTTPException(status_code=500, detail=f"Error during chunked read: {str(e)}")
-
-    print(f"--- [TEST ENDPOINT] SUCCESS: Finished processing file. Total size: {total_size} bytes. ---")
-    
-    return {"status": "success", "filename": video_file.filename, "received_bytes": total_size}
