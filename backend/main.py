@@ -217,6 +217,11 @@ execute_ffmpeg_with_optional_subtitles_declaration = types.FunctionDeclaration(
 @app.post("/api/generate-command-with-video")
 @async_error_handler
 async def generate_command_with_video(prompt: str = Form(...), video_file: Optional[UploadFile] = File(None)):
+    # =========================================================================
+    # === 新增的详细调试代码 ===
+    # =========================================================================
+    print("\n\n--- [START] NEW REQUEST RECEIVED ---")
+    print(f"--- CHECKPOINT A: ENTERING generate_command_with_video function ---")
     print(f"Received prompt for video processing: {prompt}, and video: {video_file.filename if video_file else 'No new video file provided (will attempt to use previous)'}")
     
     # Reset upload progress at the start
@@ -227,11 +232,12 @@ async def generate_command_with_video(prompt: str = Form(...), video_file: Optio
     temp_file_path = None # Initialize for finally block
 
     if video_file and video_file.filename: # New video file is provided
-        print(f"Processing new video file: {video_file.filename}")
+        print(f"--- CHECKPOINT B: New video file found: {video_file.filename}. Preparing to read. ---")
         upload_progress.update(5, "uploading", f"准备上传文件: {video_file.filename}")
         await asyncio.sleep(0.001)
         
         video_content = await video_file.read()
+        print(f"--- CHECKPOINT C: Video file read into memory. Size: {len(video_content)} bytes. ---")
         video_mime_type = video_file.content_type
         upload_progress.update(15, "uploading", "文件读取完成，准备上传到 Gemini")
         await asyncio.sleep(0.001)
@@ -242,7 +248,7 @@ async def generate_command_with_video(prompt: str = Form(...), video_file: Optio
                 tmp.write(video_content)
                 temp_file_path = tmp.name
             
-            print(f"Video content (size: {len(video_content)}) saved to temp file: {temp_file_path}")
+            print(f"--- CHECKPOINT D: File written to temporary path: {temp_file_path}. PREPARING TO UPLOAD TO GOOGLE. ---")
             upload_progress.update(25, "uploading", f"开始上传到 Gemini (文件大小: {len(video_content)} bytes)")
             print(f"Uploading temporary video file to Google: {video_file.filename}, mime_type: {video_mime_type}")
             await asyncio.sleep(0.001)
@@ -254,6 +260,7 @@ async def generate_command_with_video(prompt: str = Form(...), video_file: Optio
             upload_start_time = time.time()
             # 核心修改：将阻塞的上传操作放入后台线程，添加超时和详细错误处理
             try:
+                print("--- CHECKPOINT E: EXECUTING 'client.files.upload' in background thread... ---")
                 uploaded_file_obj = await asyncio.wait_for(
                     asyncio.to_thread(
                         client.files.upload,
@@ -263,14 +270,20 @@ async def generate_command_with_video(prompt: str = Form(...), video_file: Optio
                     timeout=300  # 5分钟超时
                 )
                 upload_duration = time.time() - upload_start_time
+                print(f"--- CHECKPOINT F: 'client.files.upload' FINISHED successfully in {upload_duration:.2f} seconds. ---")
                 print(f"✅ File upload successful in {upload_duration:.2f}s: {uploaded_file_obj.name}")
             except asyncio.TimeoutError:
+                print(f"--- [FATAL ERROR] CRASHED DURING 'client.files.upload' - TIMEOUT ---")
                 upload_progress.update(100, "error", "文件上传超时（5分钟）")
                 raise HTTPException(status_code=408, detail="文件上传超时，请检查文件大小和网络连接")
             except Exception as upload_error:
+                print(f"--- [FATAL ERROR] CRASHED DURING 'client.files.upload' ---")
+                print(f"--- The error is: {upload_error} ---")
+                print(f"--- Traceback: ---")
+                traceback.print_exc() # 打印完整的错误堆栈
                 upload_progress.update(100, "error", f"文件上传失败: {str(upload_error)}")
                 print(f"❌ File upload failed: {upload_error}")
-                raise HTTPException(status_code=500, detail=f"文件上传失败: {str(upload_error)}")
+                raise HTTPException(status_code=500, detail=f"Crashed during Google File API upload: {upload_error}")
             
             upload_duration = time.time() - upload_start_time
             print(f"PERF: client.files.upload took {upload_duration:.2f} seconds.")
@@ -279,6 +292,7 @@ async def generate_command_with_video(prompt: str = Form(...), video_file: Optio
             await asyncio.sleep(0.001)
             
             # Wait for file to be processed
+            print("--- CHECKPOINT G: Starting to wait for file processing by Gemini... ---")
             wait_progress = 60
             processing_wait_start_time = time.time()
             max_processing_time = 180  # 3分钟处理超时
@@ -315,9 +329,11 @@ async def generate_command_with_video(prompt: str = Form(...), video_file: Optio
             processing_wait_duration = time.time() - processing_wait_start_time
             print(f"PERF: File state change from PROCESSING to ACTIVE took {processing_wait_duration:.2f} seconds.")
             if not (uploaded_file_obj.state and uploaded_file_obj.state.name == "ACTIVE"):
+                print(f"--- [FATAL ERROR] File did not become ACTIVE. Current state: {uploaded_file_obj.state.name if uploaded_file_obj.state else 'UNKNOWN'} ---")
                 upload_progress.update(100, "error", f"文件未能变为 ACTIVE 状态")
                 raise HTTPException(status_code=500, detail=f"Uploaded file {uploaded_file_obj.name} did not become ACTIVE.")
             
+            print(f"--- CHECKPOINT H: File processing completed successfully. File {uploaded_file_obj.name} is ACTIVE. ---")
             upload_progress.update(100, "completed", f"文件上传并处理完成: {uploaded_file_obj.name}")
             print(f"File {uploaded_file_obj.name} is ACTIVE.")
             current_video_state.google_file_name = uploaded_file_obj.name
@@ -327,18 +343,20 @@ async def generate_command_with_video(prompt: str = Form(...), video_file: Optio
             original_video_filename_for_prompt = video_file.filename
 
         except Exception as e:
-            print(f"Error during new video processing (upload stage): {e}")
+            print(f"--- [FATAL ERROR] An unexpected error occurred in the main video processing try block. ---")
+            print(f"--- The error is: {e} ---")
+            traceback.print_exc()
             upload_progress.update(100, "error", f"Error during new video processing (upload stage): {str(e)}")
             raise HTTPException(status_code=500, detail=f"Failed to process new video (upload stage): {str(e)}")
         finally:
             if temp_file_path and os.path.exists(temp_file_path):
                 try:
                     os.remove(temp_file_path)
-                    print(f"Temporary file {temp_file_path} deleted.")
+                    print(f"--- [CLEANUP] Temporary file {temp_file_path} deleted. ---")
                 except OSError as e_remove:
-                    print(f"Error deleting temporary file {temp_file_path}: {e_remove}")
+                    print(f"--- [CLEANUP ERROR] Error deleting temporary file {temp_file_path}: {e_remove}")
     elif current_video_state.google_file_name:
-        print(f"No new video file. Using last uploaded: {current_video_state.google_file_name} (Original: {current_video_state.original_file_name})")
+        print(f"--- CHECKPOINT I: No new video file. Using last uploaded: {current_video_state.google_file_name} (Original: {current_video_state.original_file_name}) ---")
         original_video_filename_for_prompt = current_video_state.original_file_name or "input.mp4"
         try:
             # 核心修改：将阻塞的获取状态操作放入后台线程，添加超时处理
@@ -385,9 +403,11 @@ async def generate_command_with_video(prompt: str = Form(...), video_file: Optio
     else:
         # This case should ideally be caught by frontend logic if it ensures a video is always selected for the first prompt.
         # However, if backend is called directly or state is lost, this is a fallback.
+        print("--- [ERROR] No video file provided and no previous video found. Raising HTTPException. ---")
         raise HTTPException(status_code=400, detail="No video file provided and no previous video found to process.")
 
     # --- At this point, file_object_for_gemini and original_video_filename_for_prompt are set ---
+    print(f"--- CHECKPOINT J: File processing completed. Ready to construct Gemini prompt. ---")
 
     # --- Construct the prompt for Gemini ---
     tool_config_video = types.Tool(function_declarations=[execute_ffmpeg_with_optional_subtitles_declaration])
@@ -426,7 +446,7 @@ async def generate_command_with_video(prompt: str = Form(...), video_file: Optio
 
     # --- Call Gemini API and Process Response ---
     try:
-        print(f"Sending to Gemini with multimodal prompt (using file: {file_object_for_gemini.name if file_object_for_gemini else 'N/A'}) and tool: {execute_ffmpeg_with_optional_subtitles_declaration.name}")
+        print(f"--- CHECKPOINT K: Sending to Gemini with multimodal prompt (using file: {file_object_for_gemini.name if file_object_for_gemini else 'N/A'}) and tool: {execute_ffmpeg_with_optional_subtitles_declaration.name} ---")
         
         generate_content_start_time = time.time()
         # 核心修改：将Gemini API调用放入后台线程，添加超时和错误处理
@@ -445,13 +465,19 @@ async def generate_command_with_video(prompt: str = Form(...), video_file: Optio
                 timeout=120  # 2分钟超时
             )
             generate_content_duration = time.time() - generate_content_start_time
+            print(f"--- CHECKPOINT L: Gemini API call completed successfully in {generate_content_duration:.2f}s ---")
             print(f"✅ Gemini API call successful in {generate_content_duration:.2f}s")
         except asyncio.TimeoutError:
+            print(f"--- [FATAL ERROR] CRASHED DURING Gemini API call - TIMEOUT ---")
             print(f"❌ Gemini API call timeout after 2 minutes")
             raise HTTPException(status_code=408, detail="Gemini API调用超时，请稍后重试")
         except Exception as gemini_error:
+            print(f"--- [FATAL ERROR] CRASHED DURING Gemini API call ---")
+            print(f"--- The error is: {gemini_error} ---")
+            print(f"--- Traceback: ---")
+            traceback.print_exc() # 打印完整的错误堆栈
             print(f"❌ Gemini API call failed: {gemini_error}")
-            raise HTTPException(status_code=500, detail=f"Gemini API调用失败: {str(gemini_error)}")
+            raise HTTPException(status_code=500, detail=f"Crashed during Gemini API call: {str(gemini_error)}")
         
         generate_content_duration = time.time() - generate_content_start_time
         print(f"PERF: client.models.generate_content took {generate_content_duration:.2f} seconds.")
@@ -485,7 +511,8 @@ async def generate_command_with_video(prompt: str = Form(...), video_file: Optio
                     elif hasattr(part, 'text') and part.text: text_fb = part.text.strip()
                     return {"error": text_fb, "text_response": text_fb}
 
-                print(f"Gemini (video) wants to call tool '{function_call.name}' with command_array: {command_array}, output: '{output_filename}', subtitles_file: '{subtitles_filename}'")
+                print(f"--- CHECKPOINT M: Gemini wants to call tool '{function_call.name}' with command_array: {command_array}, output: '{output_filename}', subtitles_file: '{subtitles_filename}' ---")
+                print(f"--- [SUCCESS] Reached the end of the function successfully with tool call. ---")
                 return {
                     "tool_call": {
                         "name": function_call.name,
@@ -511,10 +538,11 @@ async def generate_command_with_video(prompt: str = Form(...), video_file: Optio
                     break
         
         if text_response_found:
-            print(f"Gemini (video) returned text response: {text_response_found}")
+            print(f"--- CHECKPOINT M: Gemini returned text response: {text_response_found} ---")
+            print(f"--- [SUCCESS] Reached the end of the function successfully. ---")
             return {"text_response": text_response_found}
         else:
-            print(f"Gemini response (video) did not contain a valid function call or text. Parts: {candidate.content.parts}")
+            print(f"--- [ERROR] Gemini response did not contain a valid function call or text. Parts: {candidate.content.parts} ---")
             raise HTTPException(status_code=500, detail="Gemini (video) did not return a usable function call or text response.")
 
     except HTTPException as http_exc:
