@@ -151,9 +151,6 @@ MODEL_NAME = "gemini-2.5-flash" # Using a stable model name
 if not API_KEY:
     raise RuntimeError("GOOGLE_API_KEY not found in .env file")
 
-# Initialize the new client, this is the recommended approach for the new SDK
-client = genai.Client(api_key=API_KEY)
-
 app = FastAPI()
 
 # --- CORS Middleware ---
@@ -223,6 +220,9 @@ async def generate_command_with_video(prompt: str = Form(...), video_file: Optio
     print("\n\n--- [START] NEW REQUEST RECEIVED ---")
     print(f"--- CHECKPOINT A: ENTERING generate_command_with_video function ---")
     print(f"Received prompt for video processing: {prompt}, and video: {video_file.filename if video_file else 'No new video file provided (will attempt to use previous)'}")
+
+    # Initialize the new client, this is the recommended approach for the new SDK
+    client = genai.Client(api_key=API_KEY)
     
     # Reset upload progress at the start
     upload_progress.reset()
