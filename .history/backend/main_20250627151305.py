@@ -12,31 +12,9 @@ from dotenv import load_dotenv
 from google.genai import types
 import asyncio
 import json
-import functools
-import traceback
 
 # Load environment variables from .env file
 load_dotenv()
-
-# --- 异步错误处理装饰器 ---
-def async_error_handler(func):
-    """装饰器：捕获异步函数中的所有错误并提供详细的错误信息"""
-    @functools.wraps(func)
-    async def wrapper(*args, **kwargs):
-        try:
-            return await func(*args, **kwargs)
-        except HTTPException:
-            # 重新抛出 HTTPException，保持原有的状态码和消息
-            raise
-        except asyncio.TimeoutError as e:
-            print(f"❌ Timeout in {func.__name__}: {e}")
-            print(f"🔍 Full traceback:\n{traceback.format_exc()}")
-            raise HTTPException(status_code=408, detail=f"操作超时: {func.__name__}")
-        except Exception as e:
-            print(f"❌ Unexpected error in {func.__name__}: {e}")
-            print(f"🔍 Full traceback:\n{traceback.format_exc()}")
-            raise HTTPException(status_code=500, detail=f"服务器内部错误: {str(e)}")
-    return wrapper
 
 # --- Global State for Current Video (Simple In-Memory) ---
 class CurrentVideoState:
@@ -215,7 +193,6 @@ execute_ffmpeg_with_optional_subtitles_declaration = types.FunctionDeclaration(
 )
 
 @app.post("/api/generate-command-with-video")
-@async_error_handler
 async def generate_command_with_video(prompt: str = Form(...), video_file: Optional[UploadFile] = File(None)):
     print(f"Received prompt for video processing: {prompt}, and video: {video_file.filename if video_file else 'No new video file provided (will attempt to use previous)'}")
     
@@ -429,29 +406,17 @@ async def generate_command_with_video(prompt: str = Form(...), video_file: Optio
         print(f"Sending to Gemini with multimodal prompt (using file: {file_object_for_gemini.name if file_object_for_gemini else 'N/A'}) and tool: {execute_ffmpeg_with_optional_subtitles_declaration.name}")
         
         generate_content_start_time = time.time()
-        # 核心修改：将Gemini API调用放入后台线程，添加超时和错误处理
-        try:
-            response = await asyncio.wait_for(
-                asyncio.to_thread(
-                    client.models.generate_content,
-                    model=f'models/{MODEL_NAME}',
-                    contents=[types.Content(parts=request_contents)], # Ensure parts are wrapped in types.Content
-                    config=types.GenerateContentConfig(
-                        tools=[types.Tool(function_declarations=[execute_ffmpeg_with_optional_subtitles_declaration])],
-                        tool_config=tool_config_video,
-                        temperature=0.3
-                    )
-                ),
-                timeout=120  # 2分钟超时
+        # 核心修改：将Gemini API调用放入后台线程
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model=f'models/{MODEL_NAME}',
+            contents=[types.Content(parts=request_contents)], # Ensure parts are wrapped in types.Content
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(function_declarations=[execute_ffmpeg_with_optional_subtitles_declaration])],
+                tool_config=tool_config_video,
+                temperature=0.3
             )
-            generate_content_duration = time.time() - generate_content_start_time
-            print(f"✅ Gemini API call successful in {generate_content_duration:.2f}s")
-        except asyncio.TimeoutError:
-            print(f"❌ Gemini API call timeout after 2 minutes")
-            raise HTTPException(status_code=408, detail="Gemini API调用超时，请稍后重试")
-        except Exception as gemini_error:
-            print(f"❌ Gemini API call failed: {gemini_error}")
-            raise HTTPException(status_code=500, detail=f"Gemini API调用失败: {str(gemini_error)}")
+        )
         
         generate_content_duration = time.time() - generate_content_start_time
         print(f"PERF: client.models.generate_content took {generate_content_duration:.2f} seconds.")
@@ -527,7 +492,6 @@ async def generate_command_with_video(prompt: str = Form(...), video_file: Optio
         raise HTTPException(status_code=500, detail=f"Error processing request with Gemini (video): {str(e)}")
 
 @app.get("/api/upload-progress")
-@async_error_handler
 async def upload_progress_stream():
     # 生成唯一的连接ID
     import uuid

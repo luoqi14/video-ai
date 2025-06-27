@@ -12,31 +12,9 @@ from dotenv import load_dotenv
 from google.genai import types
 import asyncio
 import json
-import functools
-import traceback
 
 # Load environment variables from .env file
 load_dotenv()
-
-# --- 异步错误处理装饰器 ---
-def async_error_handler(func):
-    """装饰器：捕获异步函数中的所有错误并提供详细的错误信息"""
-    @functools.wraps(func)
-    async def wrapper(*args, **kwargs):
-        try:
-            return await func(*args, **kwargs)
-        except HTTPException:
-            # 重新抛出 HTTPException，保持原有的状态码和消息
-            raise
-        except asyncio.TimeoutError as e:
-            print(f"❌ Timeout in {func.__name__}: {e}")
-            print(f"🔍 Full traceback:\n{traceback.format_exc()}")
-            raise HTTPException(status_code=408, detail=f"操作超时: {func.__name__}")
-        except Exception as e:
-            print(f"❌ Unexpected error in {func.__name__}: {e}")
-            print(f"🔍 Full traceback:\n{traceback.format_exc()}")
-            raise HTTPException(status_code=500, detail=f"服务器内部错误: {str(e)}")
-    return wrapper
 
 # --- Global State for Current Video (Simple In-Memory) ---
 class CurrentVideoState:
@@ -215,7 +193,6 @@ execute_ffmpeg_with_optional_subtitles_declaration = types.FunctionDeclaration(
 )
 
 @app.post("/api/generate-command-with-video")
-@async_error_handler
 async def generate_command_with_video(prompt: str = Form(...), video_file: Optional[UploadFile] = File(None)):
     print(f"Received prompt for video processing: {prompt}, and video: {video_file.filename if video_file else 'No new video file provided (will attempt to use previous)'}")
     
@@ -252,26 +229,12 @@ async def generate_command_with_video(prompt: str = Form(...), video_file: Optio
                 display_name=video_file.filename
             )
             upload_start_time = time.time()
-            # 核心修改：将阻塞的上传操作放入后台线程，添加超时和详细错误处理
-            try:
-                uploaded_file_obj = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        client.files.upload,
-                        file=temp_file_path,
-                        config=upload_config
-                    ),
-                    timeout=300  # 5分钟超时
-                )
-                upload_duration = time.time() - upload_start_time
-                print(f"✅ File upload successful in {upload_duration:.2f}s: {uploaded_file_obj.name}")
-            except asyncio.TimeoutError:
-                upload_progress.update(100, "error", "文件上传超时（5分钟）")
-                raise HTTPException(status_code=408, detail="文件上传超时，请检查文件大小和网络连接")
-            except Exception as upload_error:
-                upload_progress.update(100, "error", f"文件上传失败: {str(upload_error)}")
-                print(f"❌ File upload failed: {upload_error}")
-                raise HTTPException(status_code=500, detail=f"文件上传失败: {str(upload_error)}")
-            
+            # 核心修改：将阻塞的上传操作放入后台线程
+            uploaded_file_obj = await asyncio.to_thread(
+                client.files.upload,
+                file=temp_file_path,
+                config=upload_config
+            )
             upload_duration = time.time() - upload_start_time
             print(f"PERF: client.files.upload took {upload_duration:.2f} seconds.")
             upload_progress.update(60, "processing", f"文件上传完成，等待 Gemini 处理")
@@ -281,36 +244,22 @@ async def generate_command_with_video(prompt: str = Form(...), video_file: Optio
             # Wait for file to be processed
             wait_progress = 60
             processing_wait_start_time = time.time()
-            max_processing_time = 180  # 3分钟处理超时
-            
             while uploaded_file_obj.state and uploaded_file_obj.state.name == "PROCESSING":
-                # 检查处理超时
-                if time.time() - processing_wait_start_time > max_processing_time:
-                    upload_progress.update(100, "error", "文件处理超时（3分钟）")
-                    raise HTTPException(status_code=408, detail="Gemini文件处理超时，请稍后重试")
-                
                 wait_progress = min(90, wait_progress + 5)  # Gradually increase progress to 90%
                 upload_progress.update(wait_progress, "processing", f"Gemini 正在处理文件 {uploaded_file_obj.name}")
                 await asyncio.sleep(0.001)
                 print(f"File {uploaded_file_obj.name} is still PROCESSING. Waiting 1 seconds...")
                 await asyncio.sleep(1)
                 try:
-                    # 核心修改：将阻塞的获取状态操作放入后台线程，添加超时
-                    retrieved_file = await asyncio.wait_for(
-                        asyncio.to_thread(client.files.get, name=uploaded_file_obj.name),
-                        timeout=30  # 30秒超时
-                    )
+                    # 核心修改：将阻塞的获取状态操作放入后台线程
+                    retrieved_file = await asyncio.to_thread(client.files.get, name=uploaded_file_obj.name)
                     if retrieved_file and retrieved_file.state:
                         uploaded_file_obj = retrieved_file
-                        print(f"✅ Updated file state: {uploaded_file_obj.name} is now {uploaded_file_obj.state.name}")
+                        print(f"Updated file state: {uploaded_file_obj.name} is now {uploaded_file_obj.state.name}")
                     else:
-                        print(f"⚠️ Warning: client.files.get for {uploaded_file_obj.name} returned invalid data or state. Retrying...")
-                except asyncio.TimeoutError:
-                    print(f"⚠️ Timeout getting file status for {uploaded_file_obj.name}, retrying...")
-                    upload_progress.update(wait_progress, "processing", f"获取文件状态超时，重试中...")
+                        print(f"Warning: client.files.get for {uploaded_file_obj.name} returned invalid data or state. Retrying...")
                 except Exception as e_get_file:
-                    print(f"❌ Error calling client.files.get(name='{uploaded_file_obj.name}'): {e_get_file}. Will retry.")
-                    upload_progress.update(wait_progress, "processing", f"获取文件状态出错，重试中: {str(e_get_file)}")
+                    print(f"Error calling client.files.get(name='{uploaded_file_obj.name}'): {e_get_file}. Will retry.")
             
             processing_wait_duration = time.time() - processing_wait_start_time
             print(f"PERF: File state change from PROCESSING to ACTIVE took {processing_wait_duration:.2f} seconds.")
@@ -341,33 +290,12 @@ async def generate_command_with_video(prompt: str = Form(...), video_file: Optio
         print(f"No new video file. Using last uploaded: {current_video_state.google_file_name} (Original: {current_video_state.original_file_name})")
         original_video_filename_for_prompt = current_video_state.original_file_name or "input.mp4"
         try:
-            # 核心修改：将阻塞的获取状态操作放入后台线程，添加超时处理
-            try:
-                retrieved_file = await asyncio.wait_for(
-                    asyncio.to_thread(client.files.get, name=current_video_state.google_file_name),
-                    timeout=30
-                )
-            except asyncio.TimeoutError:
-                upload_progress.update(100, "error", "获取已缓存文件状态超时")
-                raise HTTPException(status_code=408, detail="获取已缓存文件状态超时，请重新上传文件")
-            except Exception as get_error:
-                upload_progress.update(100, "error", f"获取已缓存文件失败: {str(get_error)}")
-                raise HTTPException(status_code=500, detail=f"获取已缓存文件失败: {str(get_error)}")
-            
+            # 核心修改：将阻塞的获取状态操作放入后台线程
+            retrieved_file = await asyncio.to_thread(client.files.get, name=current_video_state.google_file_name)
             while retrieved_file.state and retrieved_file.state.name == "PROCESSING":
                 print(f"File {retrieved_file.name} is PROCESSING. Waiting 1 seconds...")
                 await asyncio.sleep(1)  # 使用异步sleep
-                try:
-                    retrieved_file = await asyncio.wait_for(
-                        asyncio.to_thread(client.files.get, name=current_video_state.google_file_name),
-                        timeout=30
-                    ) # Re-fetch
-                except asyncio.TimeoutError:
-                    print(f"⚠️ Timeout getting cached file status, retrying...")
-                    continue
-                except Exception as e_refetch:
-                    print(f"❌ Error re-fetching cached file: {e_refetch}")
-                    break
+                retrieved_file = await asyncio.to_thread(client.files.get, name=current_video_state.google_file_name) # Re-fetch
             
             if not (retrieved_file.state and retrieved_file.state.name == "ACTIVE"):
                 raise HTTPException(status_code=500, detail=f"Previously uploaded file {current_video_state.google_file_name} not ACTIVE. State: {retrieved_file.state.name if retrieved_file.state else 'UNKNOWN'}. Please re-upload.")
@@ -429,29 +357,17 @@ async def generate_command_with_video(prompt: str = Form(...), video_file: Optio
         print(f"Sending to Gemini with multimodal prompt (using file: {file_object_for_gemini.name if file_object_for_gemini else 'N/A'}) and tool: {execute_ffmpeg_with_optional_subtitles_declaration.name}")
         
         generate_content_start_time = time.time()
-        # 核心修改：将Gemini API调用放入后台线程，添加超时和错误处理
-        try:
-            response = await asyncio.wait_for(
-                asyncio.to_thread(
-                    client.models.generate_content,
-                    model=f'models/{MODEL_NAME}',
-                    contents=[types.Content(parts=request_contents)], # Ensure parts are wrapped in types.Content
-                    config=types.GenerateContentConfig(
-                        tools=[types.Tool(function_declarations=[execute_ffmpeg_with_optional_subtitles_declaration])],
-                        tool_config=tool_config_video,
-                        temperature=0.3
-                    )
-                ),
-                timeout=120  # 2分钟超时
+        # 核心修改：将Gemini API调用放入后台线程
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model=f'models/{MODEL_NAME}',
+            contents=[types.Content(parts=request_contents)], # Ensure parts are wrapped in types.Content
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(function_declarations=[execute_ffmpeg_with_optional_subtitles_declaration])],
+                tool_config=tool_config_video,
+                temperature=0.3
             )
-            generate_content_duration = time.time() - generate_content_start_time
-            print(f"✅ Gemini API call successful in {generate_content_duration:.2f}s")
-        except asyncio.TimeoutError:
-            print(f"❌ Gemini API call timeout after 2 minutes")
-            raise HTTPException(status_code=408, detail="Gemini API调用超时，请稍后重试")
-        except Exception as gemini_error:
-            print(f"❌ Gemini API call failed: {gemini_error}")
-            raise HTTPException(status_code=500, detail=f"Gemini API调用失败: {str(gemini_error)}")
+        )
         
         generate_content_duration = time.time() - generate_content_start_time
         print(f"PERF: client.models.generate_content took {generate_content_duration:.2f} seconds.")
@@ -527,7 +443,6 @@ async def generate_command_with_video(prompt: str = Form(...), video_file: Optio
         raise HTTPException(status_code=500, detail=f"Error processing request with Gemini (video): {str(e)}")
 
 @app.get("/api/upload-progress")
-@async_error_handler
 async def upload_progress_stream():
     # 生成唯一的连接ID
     import uuid

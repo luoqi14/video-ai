@@ -215,7 +215,6 @@ execute_ffmpeg_with_optional_subtitles_declaration = types.FunctionDeclaration(
 )
 
 @app.post("/api/generate-command-with-video")
-@async_error_handler
 async def generate_command_with_video(prompt: str = Form(...), video_file: Optional[UploadFile] = File(None)):
     print(f"Received prompt for video processing: {prompt}, and video: {video_file.filename if video_file else 'No new video file provided (will attempt to use previous)'}")
     
@@ -527,7 +526,6 @@ async def generate_command_with_video(prompt: str = Form(...), video_file: Optio
         raise HTTPException(status_code=500, detail=f"Error processing request with Gemini (video): {str(e)}")
 
 @app.get("/api/upload-progress")
-@async_error_handler
 async def upload_progress_stream():
     # 生成唯一的连接ID
     import uuid
