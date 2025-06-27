@@ -642,3 +642,36 @@ async def upload_progress_stream():
 
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+# ==========================================================
+# === 在你的 main.py 文件末尾添加这个全新的测试函数 ===
+# ==========================================================
+@app.post("/api/test-large-upload")
+async def test_large_upload(video_file: UploadFile = File(...)):
+    """
+    一个极其简单的测试接口，只为了验证接收大文件这个动作本身是否会导致进程崩溃。
+    """
+    print(f"\n--- [TEST ENDPOINT] STARTED: /api/test-large-upload ---")
+    print(f"--- [TEST ENDPOINT] Received file: {video_file.filename}, content-type: {video_file.content_type} ---")
+
+    # 我们不把整个文件读入内存，而是分块读取，这是更稳妥的方式
+    chunk_size = 1024 * 1024  # 1MB per chunk
+    total_size = 0
+    
+    try:
+        while True:
+            # 异步地读取一小块数据
+            chunk = await video_file.read(chunk_size)
+            if not chunk:
+                break # 文件读取完毕
+            total_size += len(chunk)
+            print(f"--- [TEST ENDPOINT] Read a chunk, total bytes so far: {total_size} ---")
+            # 我们甚至不把它写入磁盘，只是单纯地读取，把变量降到最低
+    
+    except Exception as e:
+        print(f"--- [TEST ENDPOINT] ERROR while reading chunks: {e} ---")
+        raise HTTPException(status_code=500, detail=f"Error during chunked read: {str(e)}")
+
+    print(f"--- [TEST ENDPOINT] SUCCESS: Finished processing file. Total size: {total_size} bytes. ---")
+    
+    return {"status": "success", "filename": video_file.filename, "received_bytes": total_size}
