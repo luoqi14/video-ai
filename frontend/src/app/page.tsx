@@ -81,7 +81,18 @@ export default function VideoAiPage() {
   const [error, setError] = useState<string | null>(null);
   const [textOutput, setTextOutput] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
-  const [lastProcessedVideoFile, setLastProcessedVideoFile] =
+
+  // 进度跟踪状态
+  const [progressStage, setProgressStage] = useState<string>("");
+  const [progressMessage, setProgressMessage] = useState<string>("");
+  const [elapsedTime, setElapsedTime] = useState<number>(0);
+
+  // 流式响应状态
+  const [streamingText, setStreamingText] = useState<string>("");
+  const [isStreaming, setIsStreaming] = useState<boolean>(false);
+
+  // 视频缓存状态 - 跟踪已上传的视频文件
+  const [lastUploadedVideoFile, setLastUploadedVideoFile] =
     useState<File | null>(null);
 
   // Upload progress states
@@ -163,6 +174,20 @@ export default function VideoAiPage() {
 
   const handleFileSelect = (file: File | null) => {
     if (file) {
+      // 检查是否是同一个文件（基于基本属性比较）
+      const isSameFile =
+        lastUploadedVideoFile &&
+        lastUploadedVideoFile.name === file.name &&
+        lastUploadedVideoFile.size === file.size &&
+        lastUploadedVideoFile.lastModified === file.lastModified;
+
+      if (!isSameFile) {
+        console.log("检测到新的视频文件，将在下次处理时上传");
+        setLastUploadedVideoFile(null); // 清除缓存标记
+      } else {
+        console.log("检测到相同的视频文件，将使用缓存");
+      }
+
       setVideoFile(file);
       const objectURL = URL.createObjectURL(file);
       setVideoUrl(objectURL);
@@ -201,83 +226,340 @@ export default function VideoAiPage() {
     []
   );
 
-  interface AiResponse {
-    tool_call?: {
-      name: string;
-      arguments: {
-        command_array?: string[];
-        output_filename?: string;
-        subtitles_content?: string; // For SRT/VTT content
-        subtitles_filename?: string; // e.g., 'subs.srt'
-      };
-    };
-    text_response?: string;
-    error?: string; // For backend or network errors
-  }
-
-  const getAiAssistance = async (
+  // 启动处理任务
+  const startProcessingTask = async (
     currentPrompt: string,
-    currentVideoFile: File | null,
-    lastVideoFile: File | null
-  ): Promise<{ response: AiResponse; videoWasSent: boolean }> => {
+    currentVideoFile: File | null
+  ): Promise<string> => {
     const backendUrl =
       process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8002";
     const formData = new FormData();
     formData.append("prompt", currentPrompt);
 
-    let sendVideo = false;
-    if (currentVideoFile) {
-      if (!lastVideoFile) {
-        sendVideo = true;
-      } else {
-        // Compare current selected file with the last successfully processed one
-        if (
-          currentVideoFile.name !== lastVideoFile.name ||
-          currentVideoFile.size !== lastVideoFile.size
-        ) {
-          sendVideo = true;
-        }
-      }
+    // 智能缓存逻辑：只有在文件真正改变时才上传
+    const shouldUploadVideo =
+      currentVideoFile &&
+      (lastUploadedVideoFile === null ||
+        lastUploadedVideoFile.name !== currentVideoFile.name ||
+        lastUploadedVideoFile.size !== currentVideoFile.size ||
+        lastUploadedVideoFile.lastModified !== currentVideoFile.lastModified);
+
+    if (shouldUploadVideo) {
+      formData.append("video_file", currentVideoFile);
+      console.log("📤 上传新视频文件到后端:", currentVideoFile.name);
+      setLastUploadedVideoFile(currentVideoFile); // 更新缓存标记
+    } else if (currentVideoFile) {
+      console.log(
+        "♻️ 使用已缓存的视频文件:",
+        currentVideoFile.name,
+        "（跳过上传）"
+      );
+    } else {
+      console.log("⚠️ 没有视频文件，将尝试使用后端缓存");
     }
 
-    if (sendVideo && currentVideoFile) {
-      formData.append("video_file", currentVideoFile);
-      console.log("Sending video file to backend:", currentVideoFile.name);
-    } else {
-      console.log(
-        "Not sending video file to backend, will use cached version if available."
-      );
+    const response = await fetch(`${backendUrl}/api/start-processing`, {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) {
+      let errorDetail = `HTTP error! status: ${response.status}`;
+      try {
+        const errorData = await response.json();
+        errorDetail = errorData.detail || JSON.stringify(errorData);
+      } catch {
+        errorDetail = (await response.text()) || errorDetail;
+      }
+      throw new Error(errorDetail);
     }
+
+    const data = await response.json();
+    return data.task_id;
+  };
+
+  // SSE流式响应处理
+  const handleStreamingResponse = async (taskId: string): Promise<void> => {
+    const backendUrl =
+      process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8002";
+
+    console.log(`[SSE] 开始连接流式端点: ${backendUrl}/api/stream/${taskId}`);
+    setIsStreaming(true);
+    setStreamingText("");
+
+    const eventSource = new EventSource(`${backendUrl}/api/stream/${taskId}`);
+
+    eventSource.onopen = () => {
+      console.log("[SSE] 连接成功建立");
+      setLogs((prevLogs) => [...prevLogs, "🔗 流式连接已建立"]);
+    };
+
+    eventSource.onmessage = async (event) => {
+      console.log("[SSE] 收到消息:", event.data);
+      try {
+        const data = JSON.parse(event.data);
+
+        if (data.type === "chunk") {
+          // 接收到文本块，追加到流式文本
+          setStreamingText((prev) => prev + data.text);
+        } else if (data.type === "complete") {
+          // 流式完成
+          setIsStreaming(false);
+          eventSource.close();
+
+          // 处理最终结果
+          if (data.result) {
+            const result = data.result;
+            if (result.tool_call) {
+              setGeneratedFfmpegCommand(
+                `ffmpeg ${result.tool_call.arguments.command_array.join(" ")}`
+              );
+              setLogs((prevLogs) => [
+                ...prevLogs,
+                `AI工具调用: ffmpeg ${result.tool_call.arguments.command_array.join(
+                  " "
+                )}`,
+              ]);
+
+              // 执行FFmpeg
+              await executeFFmpegCommand(result.tool_call.arguments);
+            } else if (result.text_response) {
+              // 对于流式文本响应，不再设置textOutput，避免重复显示
+              // streamingText已经包含了完整内容
+              setLogs((prevLogs) => [...prevLogs, "AI文本分析完成"]);
+            }
+          }
+
+          setIsProcessing(false);
+        } else if (data.type === "error") {
+          setError(`处理错误: ${data.message}`);
+          setIsStreaming(false);
+          setIsProcessing(false);
+          eventSource.close();
+        }
+      } catch (error) {
+        console.error("Error parsing SSE data:", error);
+      }
+    };
+
+    eventSource.onerror = (error) => {
+      console.error("SSE connection error:", error);
+      setIsStreaming(false);
+      eventSource.close();
+
+      // 回退到轮询模式
+      setLogs((prevLogs) => [...prevLogs, "流式连接断开，切换到轮询模式"]);
+      pollProgress(taskId);
+    };
+
+    // 同时启动轮询来跟踪进度（不包括AI生成阶段）
+    pollProgressForStreaming(taskId);
+  };
+
+  // 专门用于流式模式的进度轮询（只跟踪前期进度）
+  const pollProgressForStreaming = async (taskId: string): Promise<void> => {
+    const backendUrl =
+      process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8002";
 
     try {
-      const response = await fetch(
-        `${backendUrl}/api/generate-command-with-video`,
-        {
-          method: "POST",
-          body: formData, // Browser sets 'Content-Type': 'multipart/form-data' automatically
-        }
-      );
-
+      const response = await fetch(`${backendUrl}/api/progress/${taskId}`);
       if (!response.ok) {
-        let errorDetail = `HTTP error! status: ${response.status}`;
-        try {
-          const errorData = await response.json();
-          errorDetail = errorData.detail || JSON.stringify(errorData);
-        } catch {
-          errorDetail = (await response.text()) || errorDetail;
-        }
-        return { response: { error: errorDetail }, videoWasSent: sendVideo };
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
-      const data: AiResponse = await response.json();
-      return { response: data, videoWasSent: sendVideo };
+
+      const progressData = await response.json();
+      setProgressStage(progressData.stage);
+      setProgressMessage(progressData.message);
+      setElapsedTime(progressData.elapsed_time);
+      setProgress(progressData.percentage);
+
+      // 添加日志
+      const stageTranslations: { [key: string]: string } = {
+        starting: "开始处理",
+        initializing: "初始化",
+        uploading: "上传中",
+        google_processing: "Google处理",
+        ai_generating: "AI生成",
+        streaming: "流式响应",
+        complete: "完成",
+        error: "错误",
+      };
+
+      const stageText =
+        stageTranslations[progressData.stage] || progressData.stage;
+      const logMessage = `[${stageText}] ${progressData.percentage}% - ${progressData.message}`;
+
+      setLogs((prevLogs) => {
+        const lastLog = prevLogs[prevLogs.length - 1];
+        if (lastLog !== logMessage) {
+          return [...prevLogs, logMessage];
+        }
+        return prevLogs;
+      });
+
+      // 只在非流式阶段继续轮询
+      if (
+        progressData.stage !== "streaming" &&
+        progressData.stage !== "complete" &&
+        progressData.stage !== "error"
+      ) {
+        setTimeout(() => pollProgressForStreaming(taskId), 1000);
+      }
     } catch (error: unknown) {
       const errorMessage =
         error instanceof Error ? error.message : "Unknown error";
-      // When a fetch-level error occurs, videoWasSent reflects the intention before the failed fetch.
-      return {
-        response: { error: `Network or client-side error: ${errorMessage}` },
-        videoWasSent: sendVideo,
+      console.error("Error polling progress:", errorMessage);
+    }
+  };
+
+  // 查询进度（传统轮询模式，保留作为备用）
+  const pollProgress = async (taskId: string): Promise<void> => {
+    const backendUrl =
+      process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8002";
+
+    try {
+      const response = await fetch(`${backendUrl}/api/progress/${taskId}`);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const progressData = await response.json();
+      setProgressStage(progressData.stage);
+      setProgressMessage(progressData.message);
+      setElapsedTime(progressData.elapsed_time);
+      setProgress(progressData.percentage);
+
+      // 添加日志
+      const stageTranslations: { [key: string]: string } = {
+        starting: "开始处理",
+        initializing: "初始化",
+        uploading: "上传中",
+        google_processing: "Google处理",
+        ai_generating: "AI生成",
+        streaming: "流式响应",
+        complete: "完成",
+        error: "错误",
       };
+
+      const stageText =
+        stageTranslations[progressData.stage] || progressData.stage;
+      const logMessage = `[${stageText}] ${progressData.percentage}% - ${progressData.message}`;
+
+      setLogs((prevLogs) => {
+        const lastLog = prevLogs[prevLogs.length - 1];
+        if (lastLog !== logMessage) {
+          return [...prevLogs, logMessage];
+        }
+        return prevLogs;
+      });
+
+      if (progressData.stage === "complete" && progressData.result) {
+        // 处理完成，设置结果
+        const result = progressData.result;
+        if (result.tool_call) {
+          setGeneratedFfmpegCommand(
+            `ffmpeg ${result.tool_call.arguments.command_array.join(" ")}`
+          );
+          setLogs((prevLogs) => [
+            ...prevLogs,
+            `AI工具调用: ffmpeg ${result.tool_call.arguments.command_array.join(
+              " "
+            )}`,
+          ]);
+
+          // 执行FFmpeg
+          await executeFFmpegCommand(result.tool_call.arguments);
+        } else if (result.text_response) {
+          setTextOutput(result.text_response);
+          setLogs((prevLogs) => [...prevLogs, "AI返回文本回复"]);
+        }
+
+        setIsProcessing(false);
+        return;
+      } else if (progressData.stage === "error") {
+        setError(`处理错误: ${progressData.error_message}`);
+        setLogs((prevLogs) => [
+          ...prevLogs,
+          `错误: ${progressData.error_message}`,
+        ]);
+        setIsProcessing(false);
+        return;
+      }
+
+      // 继续轮询
+      if (progressData.stage !== "complete" && progressData.stage !== "error") {
+        setTimeout(() => pollProgress(taskId), 1000); // 1秒后再次查询
+      }
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
+      console.error("Error polling progress:", errorMessage);
+      setError(`查询进度时出错: ${errorMessage}`);
+      setIsProcessing(false);
+    }
+  };
+
+  // 执行FFmpeg命令
+  const executeFFmpegCommand = async (toolArgs: {
+    command_array: string[];
+    output_filename: string;
+    subtitles_content?: string;
+    subtitles_filename?: string;
+  }) => {
+    if (!ffmpegRef.current) {
+      setError("FFmpeg实例不可用");
+      return;
+    }
+
+    const {
+      command_array,
+      output_filename,
+      subtitles_content,
+      subtitles_filename,
+    } = toolArgs;
+
+    try {
+      setLogs((prevLogs) => [...prevLogs, "开始在浏览器中执行FFmpeg..."]);
+
+      // 确保视频文件已写入FFmpeg文件系统
+      if (videoFile) {
+        const inputFilename = "input.mp4"; // 固定输入文件名
+        await ffmpegRef.current.writeFile(
+          inputFilename,
+          new Uint8Array(await videoFile.arrayBuffer())
+        );
+        setLogs((prevLogs) => [
+          ...prevLogs,
+          `视频文件已写入FFmpeg文件系统: ${inputFilename}`,
+        ]);
+      }
+
+      // 加载字体
+      const fontLoaded = await loadFont();
+      if (!fontLoaded) {
+        setError("字体加载失败");
+        return;
+      }
+
+      // 写入字幕文件（如果有）
+      if (subtitles_content && subtitles_filename) {
+        await ffmpegRef.current.writeFile(
+          subtitles_filename,
+          subtitles_content
+        );
+        setLogs((prevLogs) => [
+          ...prevLogs,
+          `字幕文件已写入: ${subtitles_filename}`,
+        ]);
+      }
+
+      // 执行FFmpeg命令
+      await runFfmpeg(command_array, output_filename);
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
+      setError(`FFmpeg执行错误: ${errorMessage}`);
+      setLogs((prevLogs) => [...prevLogs, `FFmpeg执行错误: ${errorMessage}`]);
     }
   };
 
@@ -463,190 +745,27 @@ export default function VideoAiPage() {
     setGeneratedFfmpegCommand(null);
     setLogs([]);
     setProgress(0);
+    setProgressStage("");
+    setProgressMessage("");
+    setElapsedTime(0);
+    // 重置流式状态
+    setStreamingText("");
+    setIsStreaming(false);
 
     try {
-      setLogs((prevLogs) => [
-        ...prevLogs,
-        "Sending video and prompt to AI for processing...",
-      ]);
-      // Pass videoFile (current selection) and lastProcessedVideoFile to getAiAssistance
-      const { response: aiResult, videoWasSent } = await getAiAssistance(
-        naturalLanguageInput,
-        videoFile,
-        lastProcessedVideoFile
-      );
-      setLogs((prevLogs) => [
-        ...prevLogs,
-        `AI Raw Response: ${JSON.stringify(aiResult, null, 2)}`,
-      ]);
+      // 启动后台处理任务
+      const taskId = await startProcessingTask(naturalLanguageInput, videoFile);
+      setLogs((prevLogs) => [...prevLogs, `任务已启动，ID: ${taskId}`]);
 
-      if (
-        aiResult.tool_call &&
-        aiResult.tool_call.name === "execute_ffmpeg_with_optional_subtitles" &&
-        aiResult.tool_call.arguments
-      ) {
-        const args = aiResult.tool_call.arguments;
-        const command_array = args.command_array as string[];
-        const output_filename = args.output_filename as string;
-        const subtitles_content = args.subtitles_content as string | undefined;
-        const subtitles_filename = args.subtitles_filename as
-          | string
-          | undefined;
-
-        if (
-          command_array &&
-          Array.isArray(command_array) &&
-          command_array.length > 0 &&
-          output_filename
-        ) {
-          setGeneratedFfmpegCommand(`ffmpeg ${command_array.join(" ")}`);
-          setLogs((prevLogs) => [
-            ...prevLogs,
-            `AI tool call: ffmpeg ${command_array.join(" ")}`,
-          ]);
-
-          if (!ffmpegRef.current) {
-            setError("FFmpeg instance is not available. Please reload.");
-            setIsProcessing(false);
-            return;
-          }
-
-          // Extract the input filename from the command array
-          let ffmpegInputFilename = "input.mp4"; // Default fallback
-          const inputFlagIndex = command_array.indexOf("-i");
-          if (
-            inputFlagIndex !== -1 &&
-            inputFlagIndex + 1 < command_array.length
-          ) {
-            ffmpegInputFilename = command_array[inputFlagIndex + 1];
-          }
-          setLogs((prevLogs) => [
-            ...prevLogs,
-            `Identified FFmpeg input filename from AI command: ${ffmpegInputFilename}`,
-          ]);
-
-          setLogs((prevLogs) => [
-            ...prevLogs,
-            `Writing video to FFmpeg.wasm virtual filesystem as ${ffmpegInputFilename}...`,
-          ]);
-          // Ensure videoFile is not null before accessing arrayBuffer
-          if (videoFile) {
-            await ffmpegRef.current.writeFile(
-              ffmpegInputFilename,
-              new Uint8Array(await videoFile.arrayBuffer())
-            );
-            setLogs((prevLogs) => [
-              ...prevLogs,
-              `${ffmpegInputFilename} written to FFmpeg.wasm. Size: ${(
-                videoFile.size /
-                1024 /
-                1024
-              ).toFixed(2)} MB.`,
-            ]);
-          } else {
-            setError("Video file is missing, cannot write to FFmpeg.wasm.");
-            setLogs((prevLogs) => [
-              ...prevLogs,
-              "Error: Video file is missing.",
-            ]);
-            setIsProcessing(false);
-            return; // Exit if videoFile is null
-          }
-
-          const fontLoaded = await loadFont();
-          if (!fontLoaded) {
-            if (!error)
-              setError("Font loading failed, preventing further processing.");
-            setIsProcessing(false);
-            return;
-          }
-
-          if (subtitles_content && subtitles_filename) {
-            setLogs((prevLogs) => [
-              ...prevLogs,
-              `Attempting to write subtitles to FFmpeg.wasm as ${subtitles_filename}...`,
-            ]);
-            try {
-              await ffmpegRef.current.writeFile(
-                subtitles_filename,
-                subtitles_content
-              );
-              setLogs((prevLogs) => [
-                ...prevLogs,
-                `Successfully wrote subtitles to ${subtitles_filename}.`,
-              ]);
-            } catch (subError: unknown) {
-              const subErrorMessage = `Error writing subtitles (${subtitles_filename}) to FFmpeg.wasm: ${
-                subError instanceof Error ? subError.message : "Unknown error"
-              }`;
-              setError(subErrorMessage);
-              setLogs((prevLogs) => [...prevLogs, subErrorMessage]);
-              setIsProcessing(false);
-              return;
-            }
-          }
-
-          setLogs((prevLogs) => [...prevLogs, "Executing FFmpeg command..."]);
-          await runFfmpeg(command_array, output_filename);
-        } else {
-          const missingArgsError =
-            "AI response tool_call missing critical arguments (command_array or output_filename).";
-          setError(missingArgsError);
-          setLogs((prevLogs) => [...prevLogs, `Error: ${missingArgsError}`]);
-        }
-      } else if (aiResult.text_response) {
-        setTextOutput(aiResult.text_response);
-        setLogs((prevLogs) => [...prevLogs, "AI returned a text response."]);
-      } else if (aiResult.error) {
-        setError(`AI Service Error: ${aiResult.error}`);
-        setLogs((prevLogs) => [
-          ...prevLogs,
-          `Error from AI service: ${aiResult.error}`,
-        ]);
-      } else {
-        const unexpectedResponseError =
-          "Received an unexpected response structure from AI backend.";
-        setError(unexpectedResponseError);
-        setLogs((prevLogs) => [
-          ...prevLogs,
-          `Error: ${unexpectedResponseError}`,
-        ]);
-      }
-
-      // If AI processing was successful (no error from AI and we got a tool_call or text_response)
-      // update the last processed video file if a video was actually sent and processed successfully.
-      if (
-        videoWasSent &&
-        videoFile &&
-        !aiResult.error &&
-        (aiResult.tool_call || aiResult.text_response)
-      ) {
-        setLastProcessedVideoFile(videoFile); // Use videoFile from processVideo's scope
-      } else if (
-        !videoWasSent &&
-        !aiResult.error &&
-        (aiResult.tool_call || aiResult.text_response)
-      ) {
-        // If we didn't send a video (meaning we intended to use cache) and it was successful,
-        // the lastProcessedVideoFile (which should be same as videoFile in this case if user hasn't changed selection)
-        // remains valid. No change needed to lastProcessedVideoFile.
-      } else if (aiResult.error) {
-        // If there was an error, the concept of 'last successfully processed video' might be less certain.
-        // For now, we leave lastProcessedVideoFile as is. If the error was due to the video itself,
-        // the user would likely select a new one, which would then correctly be sent.
-        // If the error was transient, retrying might work with the cached video (if not sent) or by resending.
-      }
+      // 使用流式响应处理
+      await handleStreamingResponse(taskId);
     } catch (error: unknown) {
       const errorMessage =
         error instanceof Error ? error.message : "Unknown error";
-      setError(`Overall processing error: ${errorMessage}`);
-      setLogs((prevLogs) => [
-        ...prevLogs,
-        `Error during video processing: ${errorMessage}`,
-      ]);
-    } finally {
+      setError(`启动处理任务失败: ${errorMessage}`);
+      setLogs((prevLogs) => [...prevLogs, `启动处理任务失败: ${errorMessage}`]);
       setIsProcessing(false);
-      setLogs((prevLogs) => [...prevLogs, "Processing finished."]);
+      setIsStreaming(false);
     }
   }; // End of processVideo function
 
@@ -784,12 +903,38 @@ export default function VideoAiPage() {
           </div>
         )}
 
-        {isProcessing && progress > 0 && (
-          <div className="w-full bg-gray-200 dark:bg-input-bg rounded-full h-2.5 mt-4">
-            <div
-              className="bg-green-500 dark:bg-accent-green h-2.5 rounded-full transition-all duration-300 ease-linear"
-              style={{ width: `${progress}%` }}
-            ></div>
+        {isProcessing && (
+          <div className="rounded-xl bg-light-glass-bg dark:bg-dark-glass-bg backdrop-blur-lg shadow-lg border border-white/20 dark:border-white/10 p-4 mt-4">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-sm font-medium text-gray-700 dark:text-text-light">
+                处理进度
+              </h3>
+              <span className="text-xs text-gray-500 dark:text-text-muted">
+                {Math.floor(elapsedTime)}秒
+              </span>
+            </div>
+
+            <div className="w-full bg-gray-200 dark:bg-input-bg rounded-full h-2.5 mb-3">
+              <div
+                className="bg-green-500 dark:bg-accent-green h-2.5 rounded-full transition-all duration-300 ease-linear"
+                style={{ width: `${progress}%` }}
+              ></div>
+            </div>
+
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-gray-600 dark:text-text-muted">
+                {progressMessage || "正在处理..."}
+              </span>
+              <span className="font-medium text-gray-700 dark:text-text-light">
+                {progress}%
+              </span>
+            </div>
+
+            {progressStage && (
+              <div className="mt-2 text-xs text-gray-500 dark:text-text-muted">
+                当前阶段: {progressStage}
+              </div>
+            )}
           </div>
         )}
 
@@ -821,11 +966,41 @@ export default function VideoAiPage() {
               输出结果
             </h2>
             <div className="rounded-xl bg-light-glass-bg dark:bg-dark-glass-bg backdrop-blur-lg shadow-lg border border-white/20 dark:border-white/10 p-4 h-64 flex flex-col items-center justify-center text-center">
-              {isProcessing && !outputUrl && !textOutput && (
+              {isProcessing && !outputUrl && !textOutput && !isStreaming && (
                 <p className="text-gray-500 dark:text-text-muted">
                   正在处理视频，请稍候...
                 </p>
               )}
+
+              {/* 流式文本显示 */}
+              {(isStreaming || (streamingText && !isProcessing)) && (
+                <div className="w-full h-full overflow-y-auto text-left">
+                  <div className="flex items-center mb-2">
+                    <span className="text-sm font-medium text-gray-700 dark:text-text-light">
+                      AI分析结果
+                    </span>
+                    {isStreaming && (
+                      <span className="ml-2 animate-pulse text-green-500 dark:text-accent-green">
+                        ▋
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-sm text-gray-800 dark:text-text-light leading-relaxed whitespace-pre-wrap">
+                    {streamingText}
+                    {isStreaming && (
+                      <span className="ml-1 animate-pulse text-green-500 dark:text-accent-green">
+                        |
+                      </span>
+                    )}
+                  </div>
+                  {isStreaming && (
+                    <div className="mt-2 text-xs text-gray-500 dark:text-text-muted">
+                      正在分析视频内容...
+                    </div>
+                  )}
+                </div>
+              )}
+
               {!isProcessing && error && (
                 <div className="text-red-500 dark:text-red-400 p-4 text-left">
                   <p className="font-bold">An error occurred:</p>
@@ -864,22 +1039,26 @@ export default function VideoAiPage() {
                   )}
                 </div>
               )}
-              {!isProcessing && !outputUrl && textOutput && (
+              {!isProcessing && !outputUrl && textOutput && !streamingText && (
                 <div className="p-4 text-left w-full h-full overflow-y-auto">
                   <p className="text-sm mt-1">{textOutput}</p>
                 </div>
               )}
-              {!isProcessing && !outputUrl && !textOutput && !error && (
-                <div className="space-y-2 flex flex-col items-center">
-                  <NotebookIcon />
-                  <p className="font-semibold text-gray-800 dark:text-text-light">
-                    暂无结果
-                  </p>
-                  <p className="text-sm text-gray-500 dark:text-text-muted">
-                    处理视频或获取文本分析后在此处查看输出
-                  </p>
-                </div>
-              )}
+              {!isProcessing &&
+                !outputUrl &&
+                !textOutput &&
+                !error &&
+                !streamingText && (
+                  <div className="space-y-2 flex flex-col items-center">
+                    <NotebookIcon />
+                    <p className="font-semibold text-gray-800 dark:text-text-light">
+                      暂无结果
+                    </p>
+                    <p className="text-sm text-gray-500 dark:text-text-muted">
+                      处理视频或获取文本分析后在此处查看输出
+                    </p>
+                  </div>
+                )}
             </div>
           </section>
         </div>
