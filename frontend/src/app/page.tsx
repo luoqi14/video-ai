@@ -95,12 +95,79 @@ export default function VideoAiPage() {
   // 字幕相关状态
   const [subtitlesContent, setSubtitlesContent] = useState<string>("");
   const [subtitlesFilename, setSubtitlesFilename] = useState<string>("");
+  const [showSubtitlePreview, setShowSubtitlePreview] =
+    useState<boolean>(false);
 
   // 视频缓存状态 - 跟踪已上传的视频文件
   const [lastUploadedVideoFile, setLastUploadedVideoFile] =
     useState<File | null>(null);
 
+  // 智能滚动相关状态和引用
+  const logsContainerRef = useRef<HTMLDivElement>(null);
+  const outputContainerRef = useRef<HTMLDivElement>(null);
+  const [isLogsAtBottom, setIsLogsAtBottom] = useState(true);
+  const [isOutputAtBottom, setIsOutputAtBottom] = useState(true);
+  const [userScrolledLogs, setUserScrolledLogs] = useState(false);
+  const [userScrolledOutput, setUserScrolledOutput] = useState(false);
+
   // Upload progress states
+
+  // 智能滚动检测函数
+  const checkScrollPosition = useCallback(
+    (
+      container: HTMLDivElement,
+      setIsAtBottom: (value: boolean) => void,
+      setUserScrolled: (value: boolean) => void
+    ) => {
+      if (!container) return;
+
+      const { scrollTop, scrollHeight, clientHeight } = container;
+      const isAtBottom = Math.abs(scrollHeight - clientHeight - scrollTop) < 3; // 3px tolerance
+
+      setIsAtBottom(isAtBottom);
+
+      // 如果用户滚动到了非底部位置，标记为用户滚动
+      if (!isAtBottom) {
+        setUserScrolled(true);
+      } else if (isAtBottom) {
+        // 如果回到底部，重置用户滚动标记
+        setUserScrolled(false);
+      }
+    },
+    []
+  );
+
+  // 自动滚动到底部函数
+  const scrollToBottom = useCallback((container: HTMLDivElement | null) => {
+    if (container) {
+      container.scrollTop = container.scrollHeight;
+    }
+  }, []);
+
+  // 监听日志变化，智能滚动
+  useEffect(() => {
+    if (logsContainerRef.current && isLogsAtBottom && !userScrolledLogs) {
+      scrollToBottom(logsContainerRef.current);
+    }
+  }, [logs, isLogsAtBottom, userScrolledLogs, scrollToBottom]);
+
+  // 监听流式文本变化，智能滚动
+  useEffect(() => {
+    if (
+      outputContainerRef.current &&
+      isOutputAtBottom &&
+      !userScrolledOutput &&
+      isStreaming
+    ) {
+      scrollToBottom(outputContainerRef.current);
+    }
+  }, [
+    streamingText,
+    isOutputAtBottom,
+    userScrolledOutput,
+    isStreaming,
+    scrollToBottom,
+  ]);
 
   useEffect(() => {
     if (theme === "dark") {
@@ -193,6 +260,17 @@ export default function VideoAiPage() {
     setProgress(0);
     setGeneratedFfmpegCommand(null);
     setError(null);
+
+    // 重置滚动状态
+    setIsLogsAtBottom(true);
+    setIsOutputAtBottom(true);
+    setUserScrolledLogs(false);
+    setUserScrolledOutput(false);
+
+    // 重置字幕和预览状态
+    setSubtitlesContent("");
+    setSubtitlesFilename("");
+    setShowSubtitlePreview(false);
   };
 
   const handleFileSelect = (file: File | null) => {
@@ -355,7 +433,7 @@ export default function VideoAiPage() {
                 );
                 setLogs((prevLogs) => [
                   ...prevLogs,
-                  `📝 字幕文件已生成: ${
+                  `字幕文件已生成: ${
                     result.tool_call.arguments.subtitles_filename ||
                     "subtitles.srt"
                   }`,
@@ -364,6 +442,24 @@ export default function VideoAiPage() {
 
               // 执行FFmpeg
               await executeFFmpegCommand(result.tool_call.arguments);
+            } else if (result.subtitle_generation) {
+              // 处理纯字幕生成结果
+              setSubtitlesContent(
+                result.subtitle_generation.arguments.subtitles_content
+              );
+              setSubtitlesFilename(
+                result.subtitle_generation.arguments.subtitles_filename ||
+                  "subtitles.srt"
+              );
+
+              // 设置文本输出显示描述
+              setTextOutput(result.subtitle_generation.arguments.description);
+
+              setLogs((prevLogs) => [
+                ...prevLogs,
+                `字幕文件已生成: ${result.subtitle_generation.arguments.subtitles_filename}`,
+                `内容描述: ${result.subtitle_generation.arguments.description}`,
+              ]);
             } else if (result.text_response) {
               // 对于流式文本响应，不再设置textOutput，避免重复显示
               // streamingText已经包含了完整内容
@@ -510,8 +606,34 @@ export default function VideoAiPage() {
             )}`,
           ]);
 
+          // 保存字幕信息
+          if (result.tool_call.arguments.subtitles_content) {
+            setSubtitlesContent(result.tool_call.arguments.subtitles_content);
+            setSubtitlesFilename(
+              result.tool_call.arguments.subtitles_filename || "subtitles.srt"
+            );
+          }
+
           // 执行FFmpeg
           await executeFFmpegCommand(result.tool_call.arguments);
+        } else if (result.subtitle_generation) {
+          // 处理纯字幕生成结果
+          setSubtitlesContent(
+            result.subtitle_generation.arguments.subtitles_content
+          );
+          setSubtitlesFilename(
+            result.subtitle_generation.arguments.subtitles_filename ||
+              "subtitles.srt"
+          );
+
+          // 设置文本输出显示描述
+          setTextOutput(result.subtitle_generation.arguments.description);
+
+          setLogs((prevLogs) => [
+            ...prevLogs,
+            `字幕文件已生成: ${result.subtitle_generation.arguments.subtitles_filename}`,
+            `内容描述: ${result.subtitle_generation.arguments.description}`,
+          ]);
         } else if (result.text_response) {
           setTextOutput(result.text_response);
           setLogs((prevLogs) => [...prevLogs, "AI返回文本回复"]);
@@ -678,8 +800,89 @@ export default function VideoAiPage() {
 
     setLogs((prevLogs) => [
       ...prevLogs,
-      `⬇️ 已下载字幕文件: ${subtitlesFilename}`,
+      `已下载字幕文件: ${subtitlesFilename}`,
     ]);
+  };
+
+  // 烧录字幕到视频
+  const burnSubtitlesToVideo = async () => {
+    if (!ffmpegLoaded) {
+      setError("FFmpeg尚未加载完成，请稍候");
+      return;
+    }
+
+    if (!videoFile) {
+      setError("没有视频文件，请重新上传视频");
+      return;
+    }
+
+    if (!subtitlesContent || !subtitlesFilename) {
+      setError("没有字幕内容可以烧录");
+      return;
+    }
+
+    setIsProcessing(true);
+    setError(null);
+    setOutputUrl(null);
+    setProgress(0);
+    setStartTime(Date.now());
+
+    try {
+      setLogs((prevLogs) => [...prevLogs, "开始烧录字幕到视频..."]);
+
+      // 确保字体加载
+      const fontLoaded = await loadFont();
+      if (!fontLoaded) {
+        setError("字体加载失败，无法烧录中文字幕");
+        setIsProcessing(false);
+        return;
+      }
+
+      const ffmpeg = ffmpegRef.current!;
+
+      // 写入视频文件到FFmpeg文件系统
+      setLogs((prevLogs) => [...prevLogs, "正在加载视频文件到FFmpeg..."]);
+
+      const videoData = new Uint8Array(await videoFile.arrayBuffer());
+      await ffmpeg.writeFile("input.mp4", videoData);
+
+      // 写入字幕文件到FFmpeg文件系统 - 使用安全的文件名
+      const safeSubtitleFilename = "subtitles.srt";
+      setLogs((prevLogs) => [
+        ...prevLogs,
+        `正在加载字幕文件: ${safeSubtitleFilename}`,
+      ]);
+
+      await ffmpeg.writeFile(safeSubtitleFilename, subtitlesContent);
+
+      // 构建FFmpeg命令 - 烧录字幕
+      const outputFilename = "video_with_subtitles.mp4";
+      const command = [
+        "-i",
+        "input.mp4",
+        "-vf",
+        `subtitles=${safeSubtitleFilename}:fontsdir=/customfonts:force_style='Fontname=Source Han Sans SC'`,
+        "-c:a",
+        "copy",
+        outputFilename,
+      ];
+
+      setLogs((prevLogs) => [
+        ...prevLogs,
+        `执行FFmpeg命令: ffmpeg ${command.join(" ")}`,
+      ]);
+
+      // 执行FFmpeg命令
+      await runFfmpeg(command, outputFilename);
+
+      setLogs((prevLogs) => [...prevLogs, "字幕烧录完成！"]);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "未知错误";
+      setError(`烧录字幕时出错: ${errorMessage}`);
+      setLogs((prevLogs) => [...prevLogs, `错误: ${errorMessage}`]);
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const loadFont = async () => {
@@ -851,6 +1054,7 @@ export default function VideoAiPage() {
     // 重置字幕状态
     setSubtitlesContent("");
     setSubtitlesFilename("");
+    setShowSubtitlePreview(false);
 
     try {
       // 启动后台处理任务
@@ -946,7 +1150,7 @@ export default function VideoAiPage() {
 
         <div className="flex items-end space-x-3">
           <textarea
-            placeholder="输入处理指令（例如：'转换为gif'，'从10秒裁剪到15秒'，'加中英双语字幕'，'总结视频内容'等）"
+            placeholder="输入处理指令（例如：'转换为gif'，'从10秒裁剪到15秒'，‘生成字幕文件’，'加中英双语字幕'，'总结视频内容'等）"
             value={naturalLanguageInput}
             onChange={(e) => setNaturalLanguageInput(e.target.value)}
             rows={3}
@@ -1007,7 +1211,7 @@ export default function VideoAiPage() {
         {/* 字幕下载区域 */}
         {subtitlesContent && (
           <div className="rounded-xl bg-light-glass-bg dark:bg-dark-glass-bg backdrop-blur-lg shadow-lg border border-white/20 dark:border-white/10 p-3">
-            <div className="flex items-center justify-between">
+            <div className="space-y-3">
               <div>
                 <p className="text-sm text-gray-500 dark:text-text-muted">
                   生成的字幕文件：
@@ -1016,12 +1220,28 @@ export default function VideoAiPage() {
                   {subtitlesFilename} • SRT 格式
                 </p>
               </div>
-              <button
-                onClick={downloadSubtitles}
-                className="bg-accent-green hover:bg-accent-green-darker text-dark-bg dark:bg-accent-green dark:hover:bg-accent-green-darker dark:text-dark-bg font-semibold py-2 px-4 rounded-lg text-sm transition-colors shadow-md ring-1 ring-inset ring-white/75 dark:ring-black/30"
-              >
-                📥 下载字幕
-              </button>
+              <div className="flex gap-2 flex-wrap">
+                <button
+                  onClick={() => setShowSubtitlePreview(true)}
+                  className="bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-3 rounded-lg text-sm transition-colors shadow-md"
+                >
+                  预览字幕
+                </button>
+                <button
+                  onClick={downloadSubtitles}
+                  className="bg-accent-green hover:bg-accent-green-darker text-dark-bg dark:bg-accent-green dark:hover:bg-accent-green-darker dark:text-dark-bg font-semibold py-2 px-3 rounded-lg text-sm transition-colors shadow-md ring-1 ring-inset ring-white/75 dark:ring-black/30"
+                >
+                  下载字幕
+                </button>
+                {videoFile && !isProcessing && (
+                  <button
+                    onClick={burnSubtitlesToVideo}
+                    className="bg-purple-500 hover:bg-purple-600 text-white font-semibold py-2 px-3 rounded-lg text-sm transition-colors shadow-md"
+                  >
+                    烧录视频
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -1066,7 +1286,17 @@ export default function VideoAiPage() {
             <h2 className="text-xl font-semibold text-gray-900 dark:text-text-light mb-3">
               处理日志
             </h2>
-            <div className="rounded-xl bg-light-glass-bg dark:bg-dark-glass-bg backdrop-blur-lg shadow-lg border border-white/20 dark:border-white/10 p-3 h-64 overflow-y-auto text-xs font-mono text-gray-600 dark:text-text-muted space-y-1">
+            <div
+              ref={logsContainerRef}
+              onScroll={() =>
+                checkScrollPosition(
+                  logsContainerRef.current!,
+                  setIsLogsAtBottom,
+                  setUserScrolledLogs
+                )
+              }
+              className="rounded-xl bg-light-glass-bg dark:bg-dark-glass-bg backdrop-blur-lg shadow-lg border border-white/20 dark:border-white/10 p-3 h-64 overflow-y-auto text-xs font-mono text-gray-600 dark:text-text-muted space-y-1"
+            >
               {logs.length === 0 && <p>暂无日志。开始处理以查看日志。</p>}
               {logs.map((log, i) => (
                 <p
@@ -1097,14 +1327,24 @@ export default function VideoAiPage() {
 
               {/* 流式文本显示 */}
               {(isStreaming || (streamingText && !isProcessing)) && (
-                <div className="w-full h-full overflow-y-auto text-left">
+                <div
+                  ref={outputContainerRef}
+                  onScroll={() =>
+                    checkScrollPosition(
+                      outputContainerRef.current!,
+                      setIsOutputAtBottom,
+                      setUserScrolledOutput
+                    )
+                  }
+                  className="w-full h-full overflow-y-auto text-left"
+                >
                   <div className="flex items-center mb-2">
                     <span className="text-sm font-medium text-gray-700 dark:text-text-light">
                       AI分析结果
                     </span>
                     {isStreaming && (
                       <span className="ml-2 animate-pulse text-accent-green dark:text-accent-green">
-                        ▋
+                        ●
                       </span>
                     )}
                   </div>
@@ -1186,6 +1426,47 @@ export default function VideoAiPage() {
           </section>
         </div>
       </div>
+
+      {/* 字幕预览模态框 */}
+      {showSubtitlePreview && subtitlesContent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm">
+          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl max-w-4xl max-h-[80vh] w-full mx-4 overflow-hidden">
+            <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+                字幕预览 - {subtitlesFilename}
+              </h3>
+              <button
+                onClick={() => setShowSubtitlePreview(false)}
+                className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 text-xl font-bold p-1"
+              >
+                ×
+              </button>
+            </div>
+            <div className="p-4 overflow-y-auto max-h-[60vh]">
+              <pre className="whitespace-pre-wrap text-sm text-gray-800 dark:text-gray-200 font-mono leading-relaxed">
+                {subtitlesContent}
+              </pre>
+            </div>
+            <div className="flex justify-end gap-2 p-4 border-t border-gray-200 dark:border-gray-700">
+              <button
+                onClick={() => setShowSubtitlePreview(false)}
+                className="px-4 py-2 text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200 transition-colors"
+              >
+                关闭
+              </button>
+              <button
+                onClick={() => {
+                  downloadSubtitles();
+                  setShowSubtitlePreview(false);
+                }}
+                className="bg-accent-green hover:bg-accent-green-darker text-dark-bg font-semibold py-2 px-4 rounded-lg text-sm transition-colors shadow-md"
+              >
+                下载字幕
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   ); // End of main return for VideoAiPage
 } // End of VideoAiPage component

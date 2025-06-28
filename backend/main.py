@@ -222,6 +222,35 @@ async def start_processing(prompt: str = Form(...), video_file: Optional[UploadF
     
     return {"task_id": task_id}
 
+# --- Tool Definition for Subtitle Generation Only ---
+generate_subtitle_file_declaration = types.FunctionDeclaration(
+    name="generate_subtitle_file",
+    description=(
+        "Generates ONLY a subtitle file (.srt) for the video WITHOUT any video processing. "
+        "Use this tool when the user specifically asks to 'generate subtitles', 'create subtitle file', "
+        "'make srt file', or wants subtitles without modifying the video. "
+        "This tool does NOT process the video - it only analyzes the video content and creates subtitle text."
+    ),
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "subtitles_content": types.Schema(
+                type=types.Type.STRING,
+                description="The complete SRT subtitle content following the exact format requirements."
+            ),
+            "subtitles_filename": types.Schema(
+                type=types.Type.STRING,
+                description="The filename for the subtitle file (e.g., 'video_subtitles.srt', 'chinese_subs.srt')."
+            ),
+            "description": types.Schema(
+                type=types.Type.STRING,
+                description="A brief description of the subtitle content (e.g., 'Generated Chinese subtitles for the video content')."
+            )
+        },
+        required=["subtitles_content", "subtitles_filename", "description"] 
+    )
+)
+
 # --- Tool Definition for Video + Subtitles --- 
 execute_ffmpeg_with_optional_subtitles_declaration = types.FunctionDeclaration(
     name="execute_ffmpeg_with_optional_subtitles",
@@ -280,25 +309,25 @@ async def process_video_task_with_content(task_id: str, prompt: str, video_conte
                 current_video_state.google_file_name and 
                 current_video_state.original_file_name == video_filename):
                 
-                progress.update("google_processing", 20, f"♻️ 检测到相同视频文件，使用缓存: {video_filename}")
-                print(f"♻️ Same video file detected (hash: {new_file_hash[:8]}...), using cached version: {current_video_state.google_file_name}")
+                progress.update("google_processing", 20, f"检测到相同视频文件，使用缓存: {video_filename}")
+                print(f"Same video file detected (hash: {new_file_hash[:8]}...), using cached version: {current_video_state.google_file_name}")
                 
                 # 验证缓存的文件是否仍然有效
                 retrieved_file = await asyncio.to_thread(client.files.get, name=current_video_state.google_file_name)
                 if retrieved_file and retrieved_file.state and retrieved_file.state.name == "ACTIVE":
-                    progress.update("google_processing", 50, "✅ 缓存文件验证通过")
+                    progress.update("google_processing", 50, "缓存文件验证通过")
                     file_object_for_gemini = retrieved_file
                     original_video_filename_for_prompt = current_video_state.original_file_name
                 else:
-                    progress.update("uploading", 5, "⚠️ 缓存文件无效，重新上传")
-                    print(f"⚠️ Cached file is invalid, re-uploading: {current_video_state.google_file_name}")
+                    progress.update("uploading", 5, "缓存文件无效，重新上传")
+                    print(f"Cached file is invalid, re-uploading: {current_video_state.google_file_name}")
                     # 清除无效缓存
                     current_video_state.google_file_name = None
                     current_video_state.file_hash = None
                     # 继续执行上传逻辑
             else:
-                progress.update("uploading", 5, f"📤 开始处理新视频文件: {video_filename}")
-                print(f"📤 Processing new video file: {video_filename} (hash: {new_file_hash[:8]}...)")
+                progress.update("uploading", 5, f"开始处理新视频文件: {video_filename}")
+                print(f"Processing new video file: {video_filename} (hash: {new_file_hash[:8]}...)")
             
             # 如果没有有效的缓存文件，则上传新文件
             if not file_object_for_gemini:
@@ -409,59 +438,56 @@ async def process_video_task_with_content(task_id: str, prompt: str, video_conte
         progress.update("ai_generating", 60, "准备AI分析和指令生成...")
 
         # --- Construct the prompt for Gemini ---
-        tool_config_video = types.Tool(function_declarations=[execute_ffmpeg_with_optional_subtitles_declaration])
+        tool_config_video = types.Tool(function_declarations=[
+            generate_subtitle_file_declaration,
+            execute_ffmpeg_with_optional_subtitles_declaration
+        ])
         user_natural_language_prompt = prompt
         fixed_ffmpeg_input_filename = original_video_filename_for_prompt
 
         prompt_for_gemini = (
-            f"You are a helpful AI assistant. The user has provided a video file named '{fixed_ffmpeg_input_filename}'.\n"
-            f"The user's instruction is: '{user_natural_language_prompt}'.\n\n"
-            f"IMPORTANT: Analyze the user's request carefully and choose the appropriate response type:\n\n"
-            f"**TYPE 1 - Content Analysis (NO TOOLS)**: If the user wants to understand, analyze, or get information about the video content:\n"
-            f"- Examples: 'summarize this video', 'what is in this video?', 'describe the content', 'what happens in the video?', 'analyze this video', 'tell me about this video'\n"
-            f"- Action: Provide a direct text response by analyzing the video. DO NOT use any tools.\n\n"
-            f"**TYPE 2 - Video Processing (USE TOOL)**: If the user wants to transform, edit, or modify the video file:\n"
-            f"- Examples: 'convert to GIF', 'trim the video', 'extract audio', 'add subtitles', 'change format', 'resize video'\n"
-            f"- Action: Call the 'execute_ffmpeg_with_optional_subtitles' tool.\n\n"
-            f"**Current Request Analysis**: The instruction '{user_natural_language_prompt}' is asking for:\n"
-            f"- If it's about understanding/analyzing content → Provide direct text answer in Chinese\n"
-            f"- If it's about editing/converting video → Use the tool\n\n"
-            f"**Tool Usage Details** (only if TYPE 2):\n"
-            f"- The user's video is available as '{fixed_ffmpeg_input_filename}'. This MUST be the input file in your FFmpeg command.\n"
-            f"- Generate the `command_array` (the arguments for FFmpeg, without 'ffmpeg' itself), the `output_filename`, and subtitle information if needed.\n"
-            f"- **Subtitles**: If the instruction is about generating or burning in subtitles, create the content for 'subtitles_content' and a 'subtitles_filename'. When burning subtitles, your `command_array` MUST include the EXACT filter syntax:\n"
-            f"  `subtitles=<subtitles_filename>:fontsdir=/customfonts:force_style='Fontname=Source Han Sans SC'`\n"
-            f"  CRITICAL: Use 'fontsdir' NOT 'fontsize' or 'fontdir'. The correct parameter is 'fontsdir'.\n"
-            f"  Example: For a subtitle file 'chinese_subs.srt', use:\n"
-            f"  `['-i', 'input.mp4', '-vf', 'subtitles=chinese_subs.srt:fontsdir=/customfonts:force_style=\\'Fontname=Source Han Sans SC\\'', 'output.mp4']`\n"
-            f"  The font 'SourceHanSansSC-Regular.otf' is available in '/customfonts'. If no subtitles are needed, provide empty strings for 'subtitles_content' and 'subtitles_filename'.\n\n"
-            f"**CRITICAL: SRT Subtitle Format Requirements**:\n"
-            f"If generating subtitles, the 'subtitles_content' MUST follow this EXACT SRT format:\n"
+            f"User request: '{user_natural_language_prompt}' (Video file: '{fixed_ffmpeg_input_filename}')\n\n"
+            f"Response types:\n"
+            f"• Content analysis (understand/analyze video) → Text response in Chinese only\n"
+            f"• Subtitle generation (generate subtitles/srt) → Use generate_subtitle_file tool\n"
+            f"• Video processing (edit/convert video) → Use execute_ffmpeg_with_optional_subtitles tool\n\n"
+            f"Tool usage:\n"
+            f"• For video processing: Input file is '{fixed_ffmpeg_input_filename}'\n"
+            f"• For subtitle burning: Use `subtitles=<filename>:fontsdir=/customfonts:force_style='Fontname=Source Han Sans SC'`\n\n"
+            f"**SRT Format Requirements**:\n"
             f"```\n"
             f"1\n"
             f"00:00:01,500 --> 00:00:04,200\n"
-            f"欢迎来到我们的视频\n"
+            f"首先打开软件，然后选择设置\n"
             f"\n"
             f"2\n"
-            f"00:00:05,300 --> 00:00:08,750\n"
-            f"让我们开始学习吧\n"
+            f"00:00:05,000 --> 00:00:07,800\n"
+            f"这里有三个选项：音频、视频、字幕\n"
             f"\n"
             f"3\n"
-            f"00:00:10,000 --> 00:00:13,500\n"
-            f"这里是第三段字幕内容\n"
+            f"00:00:08,000 --> 00:00:10,500\n"
+            f"我们有Flux Guidance，默认2.5\n"
             f"\n"
-            f"```\n"
-            f"MANDATORY SRT Rules:\n"
-            f"1) Sequential numbering: 1, 2, 3, 4...\n"
-            f"2) Time format: HH:MM:SS,mmm --> HH:MM:SS,mmm (use comma for milliseconds, NOT period)\n"
-            f"   ✅ Correct: 00:00:01,500 --> 00:00:04,200\n"
-            f"   ❌ Wrong: 00:00:01.500 --> 00:00:04.200\n"
-            f"3) NO punctuation at sentence end: NO 。，！？\n"
-            f"4) Empty line between subtitle blocks\n"
-            f"5) Time ranges must match actual video content\n"
-            f"6) Use reasonable subtitle duration (2-5 seconds per subtitle)\n"
-            f"7) NO extra spaces, tabs, or special formatting\n\n"
-            f"Now respond appropriately based on the request type."
+            f"4\n"
+            f"00:00:11,000 --> 00:00:13,500\n"
+            f"Conditioning ZeroOut用于消除负面提示\n"
+            f"\n"
+            f"```\n\n"
+            f"**Key Rules**:\n"
+            f"• Time format: HH:MM:SS,mmm --> HH:MM:SS,mmm (comma not period)\n"
+            f"• Text: 8-20 Chinese characters max per line, ONE LINE ONLY per subtitle\n"
+            f"• NO multi-line text in single subtitle - split into separate subtitles\n"
+            f"• Punctuation: Use , : ; within sentence, NO . ? ! at end\n"
+            f"• Empty line after each subtitle block\n"
+            f"• Sequential numbering: 1, 2, 3...\n\n"
+            f"Examples:\n"
+            f"✅ 然后我有这个节点，它是进入的 (single line)\n"
+            f"❌ 然后我有这个叫做 Reference Latent 的节点它是进入 Conditioning (too long)\n"
+            f"❌ 今天天气很好。(period at end)\n"
+            f"❌ Multi-line text like:\n"
+            f"   这个工作流没什么难的\n"
+            f"   我们有Flux Guidance (WRONG - must split into separate subtitles)\n\n"
+            f"IMPORTANT: For content analysis, always respond in Chinese. Respond based on request type."
         )
 
         # Explicitly create a Part for the video file, referencing it by URI and MIME type
@@ -490,7 +516,10 @@ async def process_video_task_with_content(task_id: str, prompt: str, video_conte
             model=f'models/{MODEL_NAME}',
             contents=[types.Content(parts=request_contents)],
             config=types.GenerateContentConfig(
-                tools=[types.Tool(function_declarations=[execute_ffmpeg_with_optional_subtitles_declaration])],
+                tools=[types.Tool(function_declarations=[
+                    generate_subtitle_file_declaration,
+                    execute_ffmpeg_with_optional_subtitles_declaration
+                ])],
                 tool_config=tool_config_video,
                 temperature=0.3
             )
@@ -521,14 +550,35 @@ async def process_video_task_with_content(task_id: str, prompt: str, video_conte
                         # 处理工具调用
                         elif hasattr(part, 'function_call') and part.function_call:
                             function_call = part.function_call
-                            if function_call.name == execute_ffmpeg_with_optional_subtitles_declaration.name:
+                            
+                            if function_call.name == generate_subtitle_file_declaration.name:
+                                # 处理字幕生成工具
+                                args = function_call.args
+                                subtitles_content = args.get("subtitles_content", "")
+                                subtitles_filename = args.get("subtitles_filename", "")
+                                description = args.get("description", "")
+                                
+                                print(f"Gemini subtitle generation tool call received: {function_call.name} with args: {args}")
+                                tool_call_result = {
+                                    "subtitle_generation": {
+                                        "name": function_call.name,
+                                        "arguments": {
+                                            "subtitles_content": subtitles_content,
+                                            "subtitles_filename": subtitles_filename,
+                                            "description": description
+                                        }
+                                    }
+                                }
+                                
+                            elif function_call.name == execute_ffmpeg_with_optional_subtitles_declaration.name:
+                                # 处理视频处理工具
                                 args = function_call.args
                                 command_array = args.get("command_array")
                                 output_filename = args.get("output_filename")
                                 subtitles_content = args.get("subtitles_content", "") 
                                 subtitles_filename = args.get("subtitles_filename", "")
                                 
-                                print(f"Gemini tool call received: {function_call.name} with args: {args}")
+                                print(f"Gemini video processing tool call received: {function_call.name} with args: {args}")
                                 tool_call_result = {
                                     "tool_call": {
                                         "name": function_call.name,
