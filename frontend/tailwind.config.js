@@ -18,7 +18,7 @@ module.exports = {
         },
       },
       colors: {
-        'light-glass-bg': 'rgba(245, 251, 247, 0.7)', // A semi-transparent version of light-green-start
+        'light-glass-bg': 'rgba(242, 248, 244, 0.7)', // A semi-transparent version matching fresh green theme
         'dark-glass-bg': 'rgba(44, 47, 44, 0.6)', // A semi-transparent version of input-bg
         'light-green-start': '#A8D8B9', // For light theme gradient
         // Previous light theme colors (retained for now)
@@ -29,8 +29,8 @@ module.exports = {
 
         // New dark theme colors from UI effect image
         'dark-bg': '#1A1D1A', // Very dark background
-        'accent-green': '#3EFFAD', // Bright green for buttons/highlights
-        'accent-green-darker': '#2CC685', // A slightly darker shade for hover/active
+        'accent-green': '#7FD4A0', // Soft fresh green for buttons/highlights
+        'accent-green-darker': '#6AB68A', // A slightly deeper shade for hover/active
         'text-light': '#E0E0E0',     // Light gray for primary text
         'text-muted': '#A0A0A0',     // Muted gray for secondary text/borders
         'input-bg': '#2C2F2C',       // Background for input fields
@@ -41,7 +41,7 @@ module.exports = {
         'gradient-radial': 'radial-gradient(var(--tw-gradient-stops))',
         'gradient-conic':
           'conic-gradient(from 180deg at 50% 50%, var(--tw-gradient-stops))',
-        'theme-gradient': 'linear-gradient(to right, #A8D8B9, #68B888)', // Example theme gradient
+        'theme-gradient': 'linear-gradient(to right, #7FD4A0, #6AB68A)', // Fresh green theme gradient
       },
       boxShadow: {
         '3d': '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06), 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)', // Example for 3D effect

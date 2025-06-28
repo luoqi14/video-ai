@@ -240,7 +240,7 @@ execute_ffmpeg_with_optional_subtitles_declaration = types.FunctionDeclaration(
             "command_array": types.Schema(
                 type=types.Type.ARRAY,
                 items=types.Schema(type=types.Type.STRING),
-                description="The FFmpeg command arguments as an array of strings (without 'ffmpeg' at the beginning). Example: ['-i', 'input.mp4', '-vf', 'subtitles=subs.srt', 'output.mp4']"
+                description="The FFmpeg command arguments as an array of strings (without 'ffmpeg' at the beginning). For subtitles, use EXACT syntax: 'subtitles=filename.srt:fontsdir=/customfonts:force_style=\\'Fontname=Source Han Sans SC\\'' (CRITICAL: use 'fontsdir' NOT 'fontsize'). Example: ['-i', 'input.mp4', '-vf', 'subtitles=subs.srt:fontsdir=/customfonts:force_style=\\'Fontname=Source Han Sans SC\\'', 'output.mp4']"
             ),
             "output_filename": types.Schema(
                 type=types.Type.STRING,
@@ -333,8 +333,14 @@ async def process_video_task_with_content(task_id: str, prompt: str, video_conte
                 progress.update("google_processing", 30, "等待Google处理文件...")
                 # Wait for file to be processed
                 processing_wait_start_time = time.time()
+                wait_cycles = 0
                 while uploaded_file_obj.state and uploaded_file_obj.state.name == "PROCESSING":
-                    print(f"File {uploaded_file_obj.name} is still PROCESSING. Waiting 1 seconds...")
+                    wait_cycles += 1
+                    # 动态更新进度和消息，让用户知道仍在处理
+                    progress_percent = min(30 + wait_cycles * 2, 45)  # 从30%逐渐增加到45%
+                    progress.update("google_processing", progress_percent, f"Google正在处理文件... ({wait_cycles}s)")
+                    
+                    print(f"File {uploaded_file_obj.name} is still PROCESSING. Waiting 1 seconds... (cycle {wait_cycles})")
                     await asyncio.sleep(1)
                     
                     retrieved_file = await asyncio.to_thread(client.files.get, name=uploaded_file_obj.name)
@@ -371,8 +377,14 @@ async def process_video_task_with_content(task_id: str, prompt: str, video_conte
             original_video_filename_for_prompt = current_video_state.original_file_name or "input.mp4"
             
             retrieved_file = await asyncio.to_thread(client.files.get, name=current_video_state.google_file_name)
+            wait_cycles = 0
             while retrieved_file.state and retrieved_file.state.name == "PROCESSING":
-                print(f"File {retrieved_file.name} is PROCESSING. Waiting 1 seconds...")
+                wait_cycles += 1
+                # 动态更新进度，让用户知道正在验证文件状态
+                progress_percent = min(20 + wait_cycles, 40)
+                progress.update("google_processing", progress_percent, f"验证已缓存文件状态... ({wait_cycles}s)")
+                
+                print(f"File {retrieved_file.name} is PROCESSING. Waiting 1 seconds... (cycle {wait_cycles})")
                 await asyncio.sleep(1)
                 retrieved_file = await asyncio.to_thread(client.files.get, name=current_video_state.google_file_name)
             
@@ -417,7 +429,38 @@ async def process_video_task_with_content(task_id: str, prompt: str, video_conte
             f"**Tool Usage Details** (only if TYPE 2):\n"
             f"- The user's video is available as '{fixed_ffmpeg_input_filename}'. This MUST be the input file in your FFmpeg command.\n"
             f"- Generate the `command_array` (the arguments for FFmpeg, without 'ffmpeg' itself), the `output_filename`, and subtitle information if needed.\n"
-            f"- **Subtitles**: If the instruction is about generating or burning in subtitles, create the content for 'subtitles_content' and a 'subtitles_filename'. When burning subtitles, your `command_array` MUST include the filter `subtitles=<subtitles_filename>:fontsdir=/customfonts:force_style='Fontname=Source Han Sans SC'`. The font 'SourceHanSansSC-Regular.otf' is available in '/customfonts'. If no subtitles are needed, provide empty strings for 'subtitles_content' and 'subtitles_filename'.\n\n"
+            f"- **Subtitles**: If the instruction is about generating or burning in subtitles, create the content for 'subtitles_content' and a 'subtitles_filename'. When burning subtitles, your `command_array` MUST include the EXACT filter syntax:\n"
+            f"  `subtitles=<subtitles_filename>:fontsdir=/customfonts:force_style='Fontname=Source Han Sans SC'`\n"
+            f"  CRITICAL: Use 'fontsdir' NOT 'fontsize' or 'fontdir'. The correct parameter is 'fontsdir'.\n"
+            f"  Example: For a subtitle file 'chinese_subs.srt', use:\n"
+            f"  `['-i', 'input.mp4', '-vf', 'subtitles=chinese_subs.srt:fontsdir=/customfonts:force_style=\\'Fontname=Source Han Sans SC\\'', 'output.mp4']`\n"
+            f"  The font 'SourceHanSansSC-Regular.otf' is available in '/customfonts'. If no subtitles are needed, provide empty strings for 'subtitles_content' and 'subtitles_filename'.\n\n"
+            f"**CRITICAL: SRT Subtitle Format Requirements**:\n"
+            f"If generating subtitles, the 'subtitles_content' MUST follow this EXACT SRT format:\n"
+            f"```\n"
+            f"1\n"
+            f"00:00:01,500 --> 00:00:04,200\n"
+            f"欢迎来到我们的视频\n"
+            f"\n"
+            f"2\n"
+            f"00:00:05,300 --> 00:00:08,750\n"
+            f"让我们开始学习吧\n"
+            f"\n"
+            f"3\n"
+            f"00:00:10,000 --> 00:00:13,500\n"
+            f"这里是第三段字幕内容\n"
+            f"\n"
+            f"```\n"
+            f"MANDATORY SRT Rules:\n"
+            f"1) Sequential numbering: 1, 2, 3, 4...\n"
+            f"2) Time format: HH:MM:SS,mmm --> HH:MM:SS,mmm (use comma for milliseconds, NOT period)\n"
+            f"   ✅ Correct: 00:00:01,500 --> 00:00:04,200\n"
+            f"   ❌ Wrong: 00:00:01.500 --> 00:00:04.200\n"
+            f"3) NO punctuation at sentence end: NO 。，！？\n"
+            f"4) Empty line between subtitle blocks\n"
+            f"5) Time ranges must match actual video content\n"
+            f"6) Use reasonable subtitle duration (2-5 seconds per subtitle)\n"
+            f"7) NO extra spaces, tabs, or special formatting\n\n"
             f"Now respond appropriately based on the request type."
         )
 
@@ -539,47 +582,4 @@ async def process_video_task_with_content(task_id: str, prompt: str, video_conte
         print(f"Error in process_video_task: {str(e)}")
         progress.update("error", 0, f"处理过程中出现错误: {str(e)}")
 
-# 兼容性函数，用于处理UploadFile对象
-async def process_video_task(task_id: str, prompt: str, video_file: Optional[UploadFile]):
-    """包装函数，处理UploadFile对象并调用主要处理函数"""
-    video_content = None
-    video_mime_type = None
-    video_filename = None
-    
-    if video_file and video_file.filename:
-        try:
-            video_content = await video_file.read()
-            video_mime_type = video_file.content_type
-            video_filename = video_file.filename
-        except Exception as e:
-            print(f"Error reading video file in compatibility wrapper: {str(e)}")
-            progress = progress_store.get(task_id)
-            if progress:
-                progress.update("error", 0, f"读取视频文件失败: {str(e)}")
-            return
-    
-    await process_video_task_with_content(task_id, prompt, video_content, video_mime_type, video_filename)
 
-# 保持兼容性的旧API
-@app.post("/api/generate-command-with-video")
-async def generate_command_with_video_legacy(prompt: str = Form(...), video_file: Optional[UploadFile] = File(None)):
-    """为了向后兼容保留的同步API"""
-    # 创建任务并等待完成
-    task_id = str(uuid.uuid4())
-    progress = ProcessProgress()
-    progress.task_id = task_id
-    progress.start_time = time.time()
-    progress.update("starting", 0, "开始处理请求...")
-    progress_store[task_id] = progress
-    
-    # 同步执行处理任务
-    await process_video_task(task_id, prompt, video_file)
-    
-    # 获取结果
-    final_progress = progress_store[task_id]
-    if final_progress.stage == "error":
-        raise HTTPException(status_code=500, detail=final_progress.error_message)
-    elif final_progress.result:
-        return final_progress.result
-    else:
-        raise HTTPException(status_code=500, detail="处理失败，未获得有效结果")

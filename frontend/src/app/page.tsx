@@ -86,10 +86,15 @@ export default function VideoAiPage() {
   const [progressStage, setProgressStage] = useState<string>("");
   const [progressMessage, setProgressMessage] = useState<string>("");
   const [elapsedTime, setElapsedTime] = useState<number>(0);
+  const [startTime, setStartTime] = useState<number>(0);
 
   // 流式响应状态
   const [streamingText, setStreamingText] = useState<string>("");
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
+
+  // 字幕相关状态
+  const [subtitlesContent, setSubtitlesContent] = useState<string>("");
+  const [subtitlesFilename, setSubtitlesFilename] = useState<string>("");
 
   // 视频缓存状态 - 跟踪已上传的视频文件
   const [lastUploadedVideoFile, setLastUploadedVideoFile] =
@@ -104,6 +109,24 @@ export default function VideoAiPage() {
       document.documentElement.classList.remove("dark");
     }
   }, [theme]);
+
+  // 独立计时器 - 不依赖轮询，保证计时不卡顿
+  useEffect(() => {
+    let timer: NodeJS.Timeout | null = null;
+
+    if (isProcessing && startTime > 0) {
+      timer = setInterval(() => {
+        const now = Date.now();
+        setElapsedTime((now - startTime) / 1000);
+      }, 100); // 每100ms更新一次，确保流畅
+    }
+
+    return () => {
+      if (timer) {
+        clearInterval(timer);
+      }
+    };
+  }, [isProcessing, startTime]);
 
   const toggleTheme = () => {
     setTheme((prevTheme) => (prevTheme === "dark" ? "light" : "dark"));
@@ -321,6 +344,24 @@ export default function VideoAiPage() {
                 )}`,
               ]);
 
+              // 保存字幕信息
+              if (result.tool_call.arguments.subtitles_content) {
+                setSubtitlesContent(
+                  result.tool_call.arguments.subtitles_content
+                );
+                setSubtitlesFilename(
+                  result.tool_call.arguments.subtitles_filename ||
+                    "subtitles.srt"
+                );
+                setLogs((prevLogs) => [
+                  ...prevLogs,
+                  `📝 字幕文件已生成: ${
+                    result.tool_call.arguments.subtitles_filename ||
+                    "subtitles.srt"
+                  }`,
+                ]);
+              }
+
               // 执行FFmpeg
               await executeFFmpegCommand(result.tool_call.arguments);
             } else if (result.text_response) {
@@ -331,10 +372,12 @@ export default function VideoAiPage() {
           }
 
           setIsProcessing(false);
+          setStartTime(0); // 重置计时器
         } else if (data.type === "error") {
           setError(`处理错误: ${data.message}`);
           setIsStreaming(false);
           setIsProcessing(false);
+          setStartTime(0); // 重置计时器
           eventSource.close();
         }
       } catch (error) {
@@ -370,7 +413,7 @@ export default function VideoAiPage() {
       const progressData = await response.json();
       setProgressStage(progressData.stage);
       setProgressMessage(progressData.message);
-      setElapsedTime(progressData.elapsed_time);
+      // elapsedTime现在由独立计时器管理，不再从轮询更新
       setProgress(progressData.percentage);
 
       // 添加日志
@@ -426,7 +469,7 @@ export default function VideoAiPage() {
       const progressData = await response.json();
       setProgressStage(progressData.stage);
       setProgressMessage(progressData.message);
-      setElapsedTime(progressData.elapsed_time);
+      // elapsedTime现在由独立计时器管理，不再从轮询更新
       setProgress(progressData.percentage);
 
       // 添加日志
@@ -475,6 +518,7 @@ export default function VideoAiPage() {
         }
 
         setIsProcessing(false);
+        setStartTime(0); // 重置计时器
         return;
       } else if (progressData.stage === "error") {
         setError(`处理错误: ${progressData.error_message}`);
@@ -483,6 +527,7 @@ export default function VideoAiPage() {
           `错误: ${progressData.error_message}`,
         ]);
         setIsProcessing(false);
+        setStartTime(0); // 重置计时器
         return;
       }
 
@@ -496,6 +541,7 @@ export default function VideoAiPage() {
       console.error("Error polling progress:", errorMessage);
       setError(`查询进度时出错: ${errorMessage}`);
       setIsProcessing(false);
+      setStartTime(0); // 重置计时器
     }
   };
 
@@ -534,11 +580,38 @@ export default function VideoAiPage() {
         ]);
       }
 
-      // 加载字体
-      const fontLoaded = await loadFont();
-      if (!fontLoaded) {
-        setError("字体加载失败");
-        return;
+      // 智能字体加载：检查是否需要字体
+      const commandString = command_array.join(" ");
+      const fontRelatedPatterns = [
+        /subtitles=/i, // 字幕滤镜
+        /force_style=/i, // 强制样式
+        /fontsdir=/i, // 字体目录
+        /fontname=/i, // 字体名称
+        /font.*=.*['"]/i, // 字体相关参数
+        /style.*font/i, // 样式中的字体
+      ];
+
+      const needsFont = fontRelatedPatterns.some((pattern) =>
+        pattern.test(commandString)
+      );
+
+      if (needsFont) {
+        setLogs((prevLogs) => [...prevLogs, "🔤 检测到需要字体，正在加载..."]);
+        const fontLoaded = await loadFont();
+        if (!fontLoaded) {
+          setLogs((prevLogs) => [
+            ...prevLogs,
+            "⚠️ 字体加载失败，字幕可能使用默认字体",
+          ]);
+          // 不再直接返回，允许继续执行
+        } else {
+          setLogs((prevLogs) => [...prevLogs, "✅ 字体加载成功"]);
+        }
+      } else {
+        setLogs((prevLogs) => [
+          ...prevLogs,
+          "ℹ️ 当前命令无需字体，跳过字体下载",
+        ]);
       }
 
       // 写入字幕文件（如果有）
@@ -585,6 +658,28 @@ export default function VideoAiPage() {
       default:
         return "application/octet-stream";
     }
+  };
+
+  // 下载字幕文件
+  const downloadSubtitles = () => {
+    if (!subtitlesContent || !subtitlesFilename) return;
+
+    const blob = new Blob([subtitlesContent], {
+      type: "text/plain; charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = subtitlesFilename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    setLogs((prevLogs) => [
+      ...prevLogs,
+      `⬇️ 已下载字幕文件: ${subtitlesFilename}`,
+    ]);
   };
 
   const loadFont = async () => {
@@ -748,9 +843,14 @@ export default function VideoAiPage() {
     setProgressStage("");
     setProgressMessage("");
     setElapsedTime(0);
+    // 设置开始时间，启动独立计时器
+    setStartTime(Date.now());
     // 重置流式状态
     setStreamingText("");
     setIsStreaming(false);
+    // 重置字幕状态
+    setSubtitlesContent("");
+    setSubtitlesFilename("");
 
     try {
       // 启动后台处理任务
@@ -766,6 +866,7 @@ export default function VideoAiPage() {
       setLogs((prevLogs) => [...prevLogs, `启动处理任务失败: ${errorMessage}`]);
       setIsProcessing(false);
       setIsStreaming(false);
+      setStartTime(0); // 重置计时器
     }
   }; // End of processVideo function
 
@@ -807,7 +908,7 @@ export default function VideoAiPage() {
           className={`rounded-xl p-6 sm:p-8 text-center space-y-3 transition-all duration-300 backdrop-blur-lg shadow-lg border
               ${
                 isDragging
-                  ? "bg-light-glass-bg/95 dark:bg-dark-glass-bg/95 border-green-500 dark:border-accent-green"
+                  ? "bg-light-glass-bg/95 dark:bg-dark-glass-bg/95 border-accent-green dark:border-accent-green"
                   : "bg-light-glass-bg dark:bg-dark-glass-bg border-white/20 dark:border-white/10"
               }`}
         >
@@ -849,7 +950,7 @@ export default function VideoAiPage() {
             value={naturalLanguageInput}
             onChange={(e) => setNaturalLanguageInput(e.target.value)}
             rows={3}
-            className="grow bg-light-glass-bg dark:bg-dark-glass-bg backdrop-blur-lg shadow-inner border border-white/20 dark:border-white/10 rounded-xl p-3 text-gray-900 dark:text-text-light focus:ring-2 focus:ring-green-500 dark:focus:ring-accent-green focus:outline-none placeholder-gray-500 dark:placeholder-text-muted disabled:opacity-50 resize-none transition-colors"
+            className="grow bg-light-glass-bg dark:bg-dark-glass-bg backdrop-blur-lg shadow-inner border border-white/20 dark:border-white/10 rounded-xl p-3 text-gray-900 dark:text-text-light focus:ring-2 focus:ring-accent-green dark:focus:ring-accent-green focus:outline-none placeholder-gray-500 dark:placeholder-text-muted disabled:opacity-50 resize-none transition-colors"
             disabled={isProcessing || !ffmpegLoaded}
           />
           <button
@@ -860,7 +961,7 @@ export default function VideoAiPage() {
               !videoFile ||
               !naturalLanguageInput.trim()
             }
-            className="shrink-0 bg-green-500 hover:bg-green-600 text-white dark:bg-accent-green dark:hover:bg-accent-green-darker dark:text-dark-bg font-bold py-3 px-6 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed transition-all h-[calc(3*1.5rem+2*0.75rem+2px)] shadow-lg ring-1 ring-inset ring-white/75 dark:ring-black/30"
+            className="shrink-0 bg-accent-green hover:bg-accent-green-darker text-dark-bg dark:bg-accent-green dark:hover:bg-accent-green-darker dark:text-dark-bg font-bold py-3 px-6 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed transition-all h-[calc(3*1.5rem+2*0.75rem+2px)] shadow-lg ring-1 ring-inset ring-white/75 dark:ring-black/30"
           >
             {isProcessing ? (
               <div className="flex items-center justify-center">
@@ -897,9 +998,31 @@ export default function VideoAiPage() {
             <p className="text-sm text-gray-500 dark:text-text-muted">
               生成的 FFmpeg 命令：
             </p>
-            <code className="block bg-gray-900 dark:bg-black p-2 rounded-md text-xs text-green-400 dark:text-accent-green overflow-x-auto font-mono mt-1">
+            <code className="block bg-gray-900 dark:bg-black p-2 rounded-md text-xs text-accent-green dark:text-accent-green overflow-x-auto font-mono mt-1">
               {generatedFfmpegCommand}
             </code>
+          </div>
+        )}
+
+        {/* 字幕下载区域 */}
+        {subtitlesContent && (
+          <div className="rounded-xl bg-light-glass-bg dark:bg-dark-glass-bg backdrop-blur-lg shadow-lg border border-white/20 dark:border-white/10 p-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-500 dark:text-text-muted">
+                  生成的字幕文件：
+                </p>
+                <p className="text-xs text-gray-400 dark:text-text-muted mt-1">
+                  {subtitlesFilename} • SRT 格式
+                </p>
+              </div>
+              <button
+                onClick={downloadSubtitles}
+                className="bg-accent-green hover:bg-accent-green-darker text-dark-bg dark:bg-accent-green dark:hover:bg-accent-green-darker dark:text-dark-bg font-semibold py-2 px-4 rounded-lg text-sm transition-colors shadow-md ring-1 ring-inset ring-white/75 dark:ring-black/30"
+              >
+                📥 下载字幕
+              </button>
+            </div>
           </div>
         )}
 
@@ -916,7 +1039,7 @@ export default function VideoAiPage() {
 
             <div className="w-full bg-gray-200 dark:bg-input-bg rounded-full h-2.5 mb-3">
               <div
-                className="bg-green-500 dark:bg-accent-green h-2.5 rounded-full transition-all duration-300 ease-linear"
+                className="bg-accent-green dark:bg-accent-green h-2.5 rounded-full transition-all duration-300 ease-linear"
                 style={{ width: `${progress}%` }}
               ></div>
             </div>
@@ -980,7 +1103,7 @@ export default function VideoAiPage() {
                       AI分析结果
                     </span>
                     {isStreaming && (
-                      <span className="ml-2 animate-pulse text-green-500 dark:text-accent-green">
+                      <span className="ml-2 animate-pulse text-accent-green dark:text-accent-green">
                         ▋
                       </span>
                     )}
@@ -988,7 +1111,7 @@ export default function VideoAiPage() {
                   <div className="text-sm text-gray-800 dark:text-text-light leading-relaxed whitespace-pre-wrap">
                     {streamingText}
                     {isStreaming && (
-                      <span className="ml-1 animate-pulse text-green-500 dark:text-accent-green">
+                      <span className="ml-1 animate-pulse text-accent-green dark:text-accent-green">
                         |
                       </span>
                     )}
@@ -1032,7 +1155,7 @@ export default function VideoAiPage() {
                     <a
                       href={outputUrl}
                       download={outputActualFilename}
-                      className="mt-3 bg-green-500 hover:bg-green-600 text-white dark:bg-accent-green dark:hover:bg-accent-green-darker dark:text-dark-bg font-semibold py-1.5 px-3 rounded-xl text-sm transition-colors shadow-md ring-1 ring-inset ring-white/75 dark:ring-black/30"
+                      className="mt-3 bg-accent-green hover:bg-accent-green-darker text-dark-bg dark:bg-accent-green dark:hover:bg-accent-green-darker dark:text-dark-bg font-semibold py-1.5 px-3 rounded-xl text-sm transition-colors shadow-md ring-1 ring-inset ring-white/75 dark:ring-black/30"
                     >
                       下载 {outputActualFilename}
                     </a>
