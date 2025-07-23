@@ -7,6 +7,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL:-http://localhost:8002}
     container_name: video-ai-frontend
     ports:
       - "${FRONTEND_PORT:-3002}:3002"

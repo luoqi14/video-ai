@@ -28,9 +28,16 @@ COPY --from=deps /app/node_modules ./node_modules
 # 复制源代码
 COPY . .
 
+# 尝试复制根目录的 .env 文件（如果存在）
+RUN if [ -f "../.env" ]; then cp ../.env .env; else echo "No .env file found in parent directory"; fi
+
 # 设置构建环境变量
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
+
+# 接收构建参数
+ARG NEXT_PUBLIC_BACKEND_URL
+ENV NEXT_PUBLIC_BACKEND_URL=$NEXT_PUBLIC_BACKEND_URL
 
 # 构建应用
 RUN npm run build
