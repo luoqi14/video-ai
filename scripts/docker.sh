@@ -46,7 +46,7 @@ check_env() {
 start_service() {
     echo -e "${GREEN}启动 Video AI 服务...${NC}"
     check_env
-    docker-compose up -d
+    docker compose up -d
     echo -e "${GREEN}服务已启动！${NC}"
     echo -e "前端: ${BLUE}http://localhost:3002${NC}"
     echo -e "后端: ${BLUE}http://localhost:8002${NC}"
@@ -55,7 +55,7 @@ start_service() {
 # 停止服务
 stop_service() {
     echo -e "${YELLOW}停止 Video AI 服务...${NC}"
-    docker-compose down
+    docker compose down
     echo -e "${GREEN}服务已停止${NC}"
 }
 
@@ -69,29 +69,29 @@ restart_service() {
 # 重新构建镜像
 build_service() {
     echo -e "${BLUE}重新构建镜像...${NC}"
-    docker-compose build --no-cache
+    docker compose build --no-cache
     echo -e "${GREEN}镜像构建完成${NC}"
 }
 
 # 查看日志
 show_logs() {
     if [ -z "$2" ]; then
-        docker-compose logs -f
+        docker compose logs -f
     else
-        docker-compose logs -f "$2"
+        docker compose logs -f "$2"
     fi
 }
 
 # 查看服务状态
 show_status() {
     echo -e "${BLUE}Video AI 服务状态:${NC}"
-    docker-compose ps
+    docker compose ps
 }
 
 # 清理容器和镜像
 clean_service() {
     echo -e "${YELLOW}清理 Video AI 环境...${NC}"
-    docker-compose down -v --rmi all
+    docker compose down -v --rmi all
     docker system prune -f
     echo -e "${GREEN}清理完成${NC}"
 }
@@ -102,7 +102,7 @@ enter_shell() {
         echo -e "${YELLOW}请指定服务名称: frontend 或 backend${NC}"
         exit 1
     fi
-    docker-compose exec "$2" /bin/sh
+    docker compose exec "$2" /bin/sh
 }
 
 # 主逻辑

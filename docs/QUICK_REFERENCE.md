@@ -36,10 +36,10 @@ make clean          # 清理环境
 
 ### Docker Compose 原生命令
 ```bash
-docker-compose up -d        # 启动服务
-docker-compose down         # 停止服务
-docker-compose logs -f      # 查看日志
-docker-compose ps           # 查看状态
+docker compose up -d        # 启动服务
+docker compose down         # 停止服务
+docker compose logs -f      # 查看日志
+docker compose ps           # 查看状态
 ```
 
 ## 🔧 故障排除
@@ -47,10 +47,10 @@ docker-compose ps           # 查看状态
 ### 容器无法启动
 ```bash
 # 查看详细日志
-make dev-logs
+make logs
 
 # 检查配置
-docker-compose -f docker-compose.dev.yml config
+docker compose config
 
 # 重新构建
 make dev-build
@@ -62,10 +62,10 @@ make dev-build
 curl http://localhost:8002/
 
 # 查看后端日志
-docker-compose -f docker-compose.dev.yml logs backend-dev
+docker compose logs backend
 
 # 检查环境变量
-docker-compose -f docker-compose.dev.yml exec backend-dev env | grep GOOGLE
+docker compose exec backend env | grep GOOGLE
 ```
 
 ### 端口冲突
@@ -93,15 +93,10 @@ video-ai/
 │   ├── .dockerignore        # Docker 忽略文件
 │   └── main.py              # 主应用文件
 ├── scripts/                 # 管理脚本
-│   ├── docker-dev.sh        # 开发环境脚本
-│   └── docker-prod.sh       # 生产环境脚本
+│   └── docker.sh            # Docker管理脚本
 ├── docs/                    # 文档目录
-├── docker-compose.yml       # 基础编排文件
-├── docker-compose.dev.yml   # 开发环境编排
-├── docker-compose.prod.yml  # 生产环境编排
+├── docker-compose.yml       # 服务编排文件
 ├── .env.example             # 环境变量模板
-├── .env.development         # 开发环境配置
-├── .env.production          # 生产环境配置
 ├── .dockerignore            # 全局 Docker 忽略
 └── Makefile                 # 便捷命令
 ```
@@ -134,27 +129,27 @@ MAX_FILE_SIZE=104857600
 ### 进入容器
 ```bash
 # 前端容器
-make dev-shell-frontend
+make shell-frontend
 
 # 后端容器
-make dev-shell-backend
+make shell-backend
 
 # 或使用 Docker Compose
-docker-compose -f docker-compose.dev.yml exec frontend-dev /bin/sh
-docker-compose -f docker-compose.dev.yml exec backend-dev /bin/bash
+docker compose exec frontend /bin/sh
+docker compose exec backend /bin/bash
 ```
 
 ### 查看日志
 ```bash
 # 所有服务日志
-make dev-logs
+make logs
 
 # 特定服务日志
-docker-compose -f docker-compose.dev.yml logs -f frontend-dev
-docker-compose -f docker-compose.dev.yml logs -f backend-dev
+docker compose logs -f frontend
+docker compose logs -f backend
 
 # 最近 100 行日志
-docker-compose -f docker-compose.dev.yml logs --tail=100
+docker compose logs --tail=100
 ```
 
 ### 监控资源

@@ -77,7 +77,7 @@ make start
 ./scripts/docker.sh start
 
 # 或使用 Docker Compose
-docker-compose up -d
+docker compose up -d
 ```
 
 ### 4. 访问应用
@@ -126,7 +126,7 @@ make shell-frontend
 make shell-backend
 
 # 查看容器状态
-docker-compose ps
+docker compose ps
 
 # 查看资源使用
 docker stats

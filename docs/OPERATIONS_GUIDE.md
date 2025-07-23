@@ -9,7 +9,7 @@
 docker ps -a
 
 # 查看特定服务健康状态
-docker-compose -f docker-compose.prod.yml ps
+docker compose ps
 
 # 实时监控资源使用
 docker stats --no-stream
@@ -32,13 +32,13 @@ curl -f http://localhost:8002/
 
 ```bash
 # 查看实时日志
-make prod-logs
+make logs
 
 # 查看错误日志
-docker-compose -f docker-compose.prod.yml logs | grep ERROR
+docker compose logs | grep ERROR
 
 # 查看特定时间段日志
-docker-compose -f docker-compose.prod.yml logs --since="2024-01-01T00:00:00"
+docker compose logs --since="2024-01-01T00:00:00"
 ```
 
 ## 性能优化
@@ -97,8 +97,8 @@ BACKUP_DIR="/backups/$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$BACKUP_DIR"
 
 # 备份配置文件
-cp .env.production "$BACKUP_DIR/"
-cp docker-compose.prod.yml "$BACKUP_DIR/"
+cp .env "$BACKUP_DIR/"
+cp docker-compose.yml "$BACKUP_DIR/"
 
 # 备份日志文件
 if [ -d "logs" ]; then
@@ -118,13 +118,13 @@ echo "备份完成: $BACKUP_DIR"
 make prod-stop
 
 # 2. 恢复配置文件
-cp /backups/20240101_120000/.env.production ./
+cp /backups/20240101_120000/.env ./
 
 # 3. 恢复数据卷
 docker run --rm -v video-ai-temp-prod:/data -v /backups/20240101_120000:/backup alpine tar -xzf /backup/volumes.tar.gz -C /data
 
 # 4. 重启服务
-make prod-start
+make start
 ```
 
 ## 故障处理
@@ -138,13 +138,13 @@ make prod-start
 **排查步骤**:
 ```bash
 # 查看容器日志
-docker-compose -f docker-compose.prod.yml logs [service_name]
+docker compose logs [service_name]
 
 # 检查配置文件
-docker-compose -f docker-compose.prod.yml config
+docker compose config
 
 # 验证环境变量
-docker-compose -f docker-compose.prod.yml exec [service_name] env
+docker compose exec [service_name] env
 ```
 
 **常见原因**:
@@ -161,10 +161,10 @@ docker-compose -f docker-compose.prod.yml exec [service_name] env
 ```bash
 # 检查网络连接
 docker network ls
-docker network inspect video-ai-prod-network
+docker network inspect video-ai-network
 
 # 测试服务间连接
-docker-compose -f docker-compose.prod.yml exec frontend curl http://backend:8002/
+docker compose exec frontend curl http://backend:8002/
 
 # 检查防火墙设置
 iptables -L
@@ -211,7 +211,7 @@ docker system prune -f
 
 ```bash
 # 1. 立即停止所有服务
-docker-compose -f docker-compose.prod.yml down
+docker compose down
 
 # 2. 检查系统资源
 free -h
@@ -225,10 +225,10 @@ docker volume prune -f
 ./scripts/restore-backup.sh /backups/latest
 
 # 5. 重启服务
-make prod-start
+make start
 
 # 6. 验证服务状态
-make prod-health
+make status
 ```
 
 ## 安全管理
@@ -254,10 +254,10 @@ docker inspect video-ai-frontend-prod | grep -i user
 docker inspect video-ai-backend-prod | grep -i user
 
 # 3. 网络安全配置
-docker network inspect video-ai-prod-network
+docker network inspect video-ai-network
 
 # 4. 文件权限检查
-docker-compose -f docker-compose.prod.yml exec backend ls -la /app
+docker compose exec backend ls -la /app
 ```
 
 ## 监控告警
