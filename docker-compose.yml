@@ -14,7 +14,8 @@ services:
       - "${FRONTEND_PORT:-3002}:3002"
     environment:
       - PORT=3002
-      - NEXT_PUBLIC_API_URL=http://localhost:${BACKEND_PORT:-8002}
+      - NEXT_PUBLIC_BACKEND_URL=http://localhost:${BACKEND_PORT:-8002}
+      - NODE_ENV=${NODE_ENV:-production}
     depends_on:
       - backend
     networks:
