@@ -283,10 +283,7 @@ export default function VideoAiPage() {
         lastUploadedVideoFile.lastModified === file.lastModified;
 
       if (!isSameFile) {
-        console.log("检测到新的视频文件，将在下次处理时上传");
         setLastUploadedVideoFile(null); // 清除缓存标记
-      } else {
-        console.log("检测到相同的视频文件，将使用缓存");
       }
 
       setVideoFile(file);
@@ -334,6 +331,7 @@ export default function VideoAiPage() {
   ): Promise<string> => {
     const backendUrl =
       process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8002";
+
     const formData = new FormData();
     formData.append("prompt", currentPrompt);
 
@@ -347,16 +345,7 @@ export default function VideoAiPage() {
 
     if (shouldUploadVideo) {
       formData.append("video_file", currentVideoFile);
-      console.log("📤 上传新视频文件到后端:", currentVideoFile.name);
       setLastUploadedVideoFile(currentVideoFile); // 更新缓存标记
-    } else if (currentVideoFile) {
-      console.log(
-        "♻️ 使用已缓存的视频文件:",
-        currentVideoFile.name,
-        "（跳过上传）"
-      );
-    } else {
-      console.log("⚠️ 没有视频文件，将尝试使用后端缓存");
     }
 
     const response = await fetch(`${backendUrl}/api/start-processing`, {
@@ -384,19 +373,16 @@ export default function VideoAiPage() {
     const backendUrl =
       process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8002";
 
-    console.log(`[SSE] 开始连接流式端点: ${backendUrl}/api/stream/${taskId}`);
     setIsStreaming(true);
     setStreamingText("");
 
     const eventSource = new EventSource(`${backendUrl}/api/stream/${taskId}`);
 
     eventSource.onopen = () => {
-      console.log("[SSE] 连接成功建立");
       setLogs((prevLogs) => [...prevLogs, "🔗 流式连接已建立"]);
     };
 
     eventSource.onmessage = async (event) => {
-      console.log("[SSE] 收到消息:", event.data);
       try {
         const data = JSON.parse(event.data);
 

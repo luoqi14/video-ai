@@ -1,3 +1,6 @@
+// 加载根目录的 .env 文件
+require('dotenv').config({ path: '../.env' });
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   // 禁用 ESLint 检查，允许构建即使有 ESLint 错误
