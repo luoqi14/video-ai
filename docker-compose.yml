@@ -1,8 +1,6 @@
 # Video AI 项目 Docker Compose 配置
 # 统一的服务编排配置
 
-version: '3.8'
-
 services:
   # 前端服务 - Next.js
   frontend:

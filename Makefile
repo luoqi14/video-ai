@@ -43,7 +43,8 @@ restart:
 	@./scripts/docker.sh restart
 
 build:
-	@./scripts/docker.sh build
+	@echo "重新构建镜像..."
+	@docker compose build --no-cache --parallel
 
 logs:
 	@./scripts/docker.sh logs
