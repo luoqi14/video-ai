@@ -15,8 +15,8 @@ WORKDIR /app
 # 复制包管理文件
 COPY package*.json ./
 
-# 安装依赖（使用npm ci进行更快、更可靠的安装）
-RUN npm ci --only=production && npm cache clean --force
+# 安装所有依赖（构建时需要）
+RUN npm ci && npm cache clean --force
 
 # 阶段2: 构建应用
 FROM node:20-alpine AS builder
