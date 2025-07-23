@@ -93,14 +93,38 @@ video-ai/
 
 ## 5. 运行项目
 
+### 传统方式运行
+
 要同时启动前端和后端的开发服务器，请在项目的**根目录**下运行以下命令：
 
 ```bash
 npm run dev
 ```
 
-- **Next.js 前端** 将运行在 `http://localhost:3000`
-- **FastAPI 后端** 将运行在 `http://localhost:8000`确保 `tailwind.config.js` 文件配置正确，特别是 `content` 路径，以便Tailwind能够扫描到所有使用其工具类的地方：
+- **Next.js 前端** 将运行在 `http://localhost:3002`
+- **FastAPI 后端** 将运行在 `http://localhost:8002`
+
+### Docker 方式运行（推荐）
+
+本项目已完全 Docker 化，支持一键启动：
+
+```bash
+# 初始化环境
+make setup
+
+# 启动服务
+make start
+
+# 访问应用
+# 前端: http://localhost:3002
+# 后端: http://localhost:8002
+```
+
+更多 Docker 相关命令请参考 [Docker 部署指南](docs/DOCKER_DEPLOYMENT.md)。
+
+## 6. Tailwind CSS 配置
+
+确保 `tailwind.config.js` 文件配置正确，特别是 `content` 路径，以便Tailwind能够扫描到所有使用其工具类的地方：
 
 ```javascript
 // tailwind.config.js
@@ -149,9 +173,30 @@ body {
 }
 ```
 
-## 8. 部署
+## 8. Docker 部署
 
-(请在此处填写关于如何部署项目的信息，例如使用 Vercel, Netlify 或其他平台。)
+本项目提供完整的 Docker 化解决方案，支持开发和生产环境：
+
+### 服务管理
+```bash
+make start         # 启动服务
+make stop          # 停止服务
+make logs          # 查看日志
+make status        # 查看状态
+```
+
+### 详细文档
+- [Docker 部署指南](docs/DOCKER_DEPLOYMENT.md) - 完整的部署说明
+- [运维指南](docs/OPERATIONS_GUIDE.md) - 监控和维护
+- [快速参考](docs/QUICK_REFERENCE.md) - 常用命令速查
+
+### Docker 特性
+- ✅ 多阶段构建优化镜像大小
+- ✅ 非 root 用户安全运行
+- ✅ 健康检查和自动重启
+- ✅ 开发环境热重载支持
+- ✅ 生产环境性能优化
+- ✅ 完整的日志和监控配置
 
 ## 9. 代码规范与提交
 

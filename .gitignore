@@ -1,3 +1,8 @@
+# Environment variables (contains sensitive information)
+.env
+.env.local
+.env.*.local
+
 # Frontend dependencies
 frontend/node_modules
 frontend/.next
@@ -7,9 +12,22 @@ frontend/.env.local
 backend/venv
 backend/__pycache__
 backend/.pytest_cache
+backend/.env
 
 # IDE / OS files
 .DS_Store
 .vscode/
 node_modules
 .history
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+temp/
+tmp/

@@ -1,0 +1,64 @@
+# Video AI 项目 Docker Compose 配置
+# 统一的服务编排配置
+
+version: '3.8'
+
+services:
+  # 前端服务 - Next.js
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: video-ai-frontend
+    ports:
+      - "${FRONTEND_PORT:-3002}:3002"
+    environment:
+      - PORT=3002
+      - NEXT_PUBLIC_API_URL=http://localhost:${BACKEND_PORT:-8002}
+    depends_on:
+      - backend
+    networks:
+      - video-ai-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "healthcheck.js"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # 后端服务 - FastAPI
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: video-ai-backend
+    ports:
+      - "${BACKEND_PORT:-8002}:8002"
+    environment:
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+    volumes:
+      # 挂载临时文件目录用于视频处理
+      - video-temp:/app/temp
+    networks:
+      - video-ai-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+# 网络配置
+networks:
+  video-ai-network:
+    driver: bridge
+    name: video-ai-network
+
+# 数据卷配置
+volumes:
+  video-temp:
+    driver: local

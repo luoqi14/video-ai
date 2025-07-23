@@ -4,8 +4,8 @@ const nextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
   },
-  // 配置静态导出
-  output: 'export',
+  // Docker部署配置：使用standalone输出模式
+  output: process.env.NODE_ENV === 'production' && !process.env.STATIC_EXPORT ? 'standalone' : 'export',
   // 关闭图像优化，适用于静态导出
   images: {
     unoptimized: true,
