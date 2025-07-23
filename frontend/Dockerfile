@@ -55,6 +55,7 @@ COPY --from=builder /app/package.json ./package.json
 # 复制构建输出
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 
 # 切换到非root用户
 USER nextjs
