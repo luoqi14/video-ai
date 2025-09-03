@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 3002",
-    "dev:prod": "NEXT_PUBLIC_BACKEND_URL=https://tools-video.lumiidental.com next dev -p 3002",
+    "dev:prod": "NEXT_PUBLIC_BACKEND_URL=https://tools-video.jarvismedical.asia next dev -p 3002",
     "build": "next build",
     "export": "next export",
     "build-static": "next build",
