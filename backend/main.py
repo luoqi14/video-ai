@@ -88,7 +88,7 @@ origins = [
     "http://localhost:3002",
     "http://127.0.0.1:3002",
     "https://video.jarvismedical.asia",
-    "https://tools-video.lumiidental.com",
+    "https://tools-video.jarvismedical.asia",
 ]
 
 app.add_middleware(
