@@ -3,10 +3,6 @@ require('dotenv').config({ path: '../.env' });
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // 禁用 ESLint 检查，允许构建即使有 ESLint 错误
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
   // 禁用 TypeScript 检查，加快构建速度
   typescript: {
     ignoreBuildErrors: true,
@@ -20,11 +16,16 @@ const nextConfig = {
   // 静态资源配置
   assetPrefix: process.env.NODE_ENV === 'production' ? '' : '',
   trailingSlash: false,
-  // 实验性功能配置
-  experimental: {
-    // 启用服务器组件日志
-    serverComponentsExternalPackages: ['@ffmpeg/ffmpeg', '@ffmpeg/util'],
-  },
+  
+  // 外部包配置 (Moved from experimental.serverComponentsExternalPackages in Next 16)
+  serverExternalPackages: ['@ffmpeg/ffmpeg', '@ffmpeg/util'],
+  
+  // 实验性功能配置 (Empty now as serverComponentsExternalPackages moved)
+  experimental: {},
+  
+  // Silence Turbopack error for custom webpack config
+  turbopack: {},
+
   async headers() {
     return [
       {
@@ -59,6 +60,7 @@ const nextConfig = {
       crypto: false,
       stream: false,
       buffer: false,
+      ...config.resolve.fallback, // Keep existing fallbacks if any
     };
 
     // 优化构建性能
